@@ -1,0 +1,1 @@
+java -jar ../target/SigningAuthorisation-0.0.1-SNAPSHOT-all.jar verify --mode crypto --alg RS512 --in .\MyJSON_rs512_compact.jws --pub-dir ..\target\example --pub-file meine_test_gmbh_cert.pem

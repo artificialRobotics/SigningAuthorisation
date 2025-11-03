@@ -1,0 +1,1 @@
+java -jar ../target/SigningAuthorisation-0.0.1-SNAPSHOT-all.jar sign --alg RS512 --payload MyJSON.json --key-dir ..\target\example --key-file meine_test_gmbh_key.pem --out-format compact --out .\MyJSON_rs512_compact.jws --sigT CURRENT --sub aPaymentResID
