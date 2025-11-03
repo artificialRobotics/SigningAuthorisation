@@ -1,1 +1,0 @@
-java -jar ../SigningAuthorisation-0.0.1-SNAPSHOT-all.jar verify --mode crypto --alg RS512 --in C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\target\example\MyJSON_rs512_compact.jws --pub-dir C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\target\example --pub-file meine_test_gmbh_cert.pem

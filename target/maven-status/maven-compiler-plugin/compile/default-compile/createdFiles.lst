@@ -6,7 +6,6 @@ artificialrobotics\com\SigningAuthorisation\signingKeys\RSAHexPrivateKeyLoader.c
 artificialrobotics\com\SigningAuthorisation\signingKeys\PrivateKeyFactory.class
 artificialrobotics\com\SigningAuthorisation\signingKeys\PrivateKeyLoader.class
 artificialrobotics\com\SigningAuthorisation\InitBC.class
-artificialrobotics\com\SigningAuthorisation\cli\SignCmdOLD1.class
 artificialrobotics\com\SigningAuthorisation\cli\EcdsaDer.class
 artificialrobotics\com\SigningAuthorisation\cli\VerifyCmd.class
 artificialrobotics\com\SigningAuthorisation\certificates\CertificateLoader.class
@@ -24,7 +23,6 @@ artificialrobotics\com\SigningAuthorisation\cli\SignCmd.class
 artificialrobotics\com\SigningAuthorisation\signingKeys\PEMPublicKeyLoader.class
 artificialrobotics\com\SigningAuthorisation\JSON\App.class
 artificialrobotics\com\SigningAuthorisation\JSON\RunVerifySignature.class
-artificialrobotics\com\SigningAuthorisation\cli\VerifyCmdOLD1.class
 artificialrobotics\com\SigningAuthorisation\signingKeys\PublicKeyLoader.class
 artificialrobotics\com\SigningAuthorisation\signingKeys\RSAXmlPrivateKeyLoader.class
 artificialrobotics\com\SigningAuthorisation\signingKeys\RSAXmlPublicKeyLoader.class
