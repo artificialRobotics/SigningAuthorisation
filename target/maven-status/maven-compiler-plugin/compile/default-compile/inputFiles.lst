@@ -8,10 +8,12 @@ C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artifi
 C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artificialrobotics\com\SigningAuthorisation\cli\SignCmd.java
 C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artificialrobotics\com\SigningAuthorisation\cli\VerifyCmd.java
 C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artificialrobotics\com\SigningAuthorisation\InitBC.java
+C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artificialrobotics\com\SigningAuthorisation\jose\EcdsaDer.java
 C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artificialrobotics\com\SigningAuthorisation\jose\package-info.java
 C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artificialrobotics\com\SigningAuthorisation\jose\ProtectedHeader.java
-C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artificialrobotics\com\SigningAuthorisation\JSON\App.java
-C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artificialrobotics\com\SigningAuthorisation\JSON\RunVerifySignature.java
+C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artificialrobotics\com\SigningAuthorisation\json\App.java
+C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artificialrobotics\com\SigningAuthorisation\json\JsonCanonicalizerJcs.java
+C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artificialrobotics\com\SigningAuthorisation\json\RunVerifySignature.java
 C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artificialrobotics\com\SigningAuthorisation\signingKeys\KeystorePrivateKeyLoader.java
 C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artificialrobotics\com\SigningAuthorisation\signingKeys\package-info.java
 C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artificialrobotics\com\SigningAuthorisation\signingKeys\PEMPublicKeyLoader.java

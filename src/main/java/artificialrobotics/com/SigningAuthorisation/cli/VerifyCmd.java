@@ -2,6 +2,7 @@ package artificialrobotics.com.SigningAuthorisation.cli;
 
 import artificialrobotics.com.SigningAuthorisation.InitBC;
 import artificialrobotics.com.SigningAuthorisation.certificates.PEMCertificateLoader;
+import artificialrobotics.com.SigningAuthorisation.json.JsonCanonicalizerJcs;
 import artificialrobotics.com.SigningAuthorisation.signingKeys.PublicKeyFactory;
 import eu.europa.esig.dss.enumerations.MimeTypeEnum;
 import eu.europa.esig.dss.model.DSSDocument;
@@ -46,6 +47,10 @@ public class VerifyCmd implements Runnable {
 
     @CommandLine.Option(names = "--payload", description = "Detached payload file (raw bytes). Required for detached or b64=false.")
     Path payloadFile;
+
+    // NEU: optionale Kanonisierung für die externe Payload-Datei
+    @CommandLine.Option(names = "--canonicalize-payload", description = "Apply canonicalization to detached payload before verification. Supported value: jcs")
+    String canonicalizePayload; // expected "jcs"
 
     @Override
     public void run() {
@@ -94,15 +99,15 @@ public class VerifyCmd implements Runnable {
                     throw new IllegalArgumentException("b64=false erfordert --payload mit den ROH-Bytes der Nutzlast.");
                 }
                 byte[] left = (protectedB64 + ".").getBytes(StandardCharsets.US_ASCII);
-                byte[] raw  = Files.readAllBytes(payloadFile);
+                byte[] raw  = loadDetachedPayloadPossiblyCanonicalized(); // NEU: ggf. JCS
                 signingInput = concat(left, raw);
             } else {
                 if (detached) {
-                    // Detached: payloadB64 aus Datei erzeugen
+                    // Detached: payloadB64 aus Datei erzeugen (ggf. nach JCS)
                     if (payloadFile == null) {
                         throw new IllegalArgumentException("detached erfordert --payload (für b64=true).");
                     }
-                    byte[] raw = Files.readAllBytes(payloadFile);
+                    byte[] raw = loadDetachedPayloadPossiblyCanonicalized(); // NEU: ggf. JCS
                     payloadB64 = Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
                 } else {
                     // eingebettet -> payloadB64 muss vorhanden sein
@@ -181,7 +186,7 @@ public class VerifyCmd implements Runnable {
         SignedDocumentValidator validator = SignedDocumentValidator.fromDocument(sigDoc);
         validator.setCertificateVerifier(new CommonCertificateVerifier()); // Basis; TSL/OCSP/CRL später konfigurieren
 
-        // Detached-/b64=false-Handhabung: DSS benötigt die originalen Payload-Bytes
+        // Detached-/b64=false-Handhabung: DSS kann mit detached Contents umgehen
         if (payloadFile != null) {
             byte[] raw = Files.readAllBytes(payloadFile);
             validator.setDetachedContents(List.of(new InMemoryDocument(raw)));
@@ -265,5 +270,28 @@ public class VerifyCmd implements Runnable {
         System.arraycopy(a, 0, out, 0, a.length);
         System.arraycopy(b, 0, out, a.length, b.length);
         return out;
+    }
+
+    /** Lädt die externe Payload-Datei und kanonisiert sie optional (JCS), wenn --canonicalize-payload=jcs gesetzt wurde. */
+    private byte[] loadDetachedPayloadPossiblyCanonicalized() throws Exception {
+        byte[] raw = Files.readAllBytes(payloadFile);
+        boolean doCanonicalize = canonicalizePayload != null && canonicalizePayload.equalsIgnoreCase("jcs");
+        if (!doCanonicalize) return raw;
+
+        // Nur JSON-Dateien sind kanonisierbar – sicherstellen
+        String asText = new String(raw, StandardCharsets.UTF_8);
+        if (!looksLikeJson(asText)) {
+            throw new IllegalArgumentException("--canonicalize-payload=jcs benötigt eine JSON-Payload-Datei (Object oder Array).");
+        }
+        String canonical = JsonCanonicalizerJcs.canonicalize(asText);
+        return canonical.getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static boolean looksLikeJson(String s) {
+        int i = 0, n = s.length();
+        while (i < n && Character.isWhitespace(s.charAt(i))) i++;
+        if (i >= n) return false;
+        char c = s.charAt(i);
+        return c == '{' || c == '[';
     }
 }

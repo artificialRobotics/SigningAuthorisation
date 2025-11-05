@@ -1,4 +1,4 @@
-package artificialrobotics.com.SigningAuthorisation.JSON;
+package artificialrobotics.com.SigningAuthorisation.json;
 
 /**
  * Hello world!

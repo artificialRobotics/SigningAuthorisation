@@ -6,12 +6,17 @@ import artificialrobotics.com.SigningAuthorisation.signingKeys.KeystorePrivateKe
 import artificialrobotics.com.SigningAuthorisation.certificates.CertificateLoader;
 import artificialrobotics.com.SigningAuthorisation.certificates.PEMCertificateLoader;
 import artificialrobotics.com.SigningAuthorisation.jose.ProtectedHeader;
+import artificialrobotics.com.SigningAuthorisation.json.JsonCanonicalizerJcs;
+import artificialrobotics.com.SigningAuthorisation.jose.EcdsaDer; // ✅ benötigt für ECDSA DER↔R||S
 
 import picocli.CommandLine;
 
+import java.nio.charset.CharsetDecoder;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.security.PrivateKey;
 import java.security.Signature;
 import java.security.spec.PSSParameterSpec;
@@ -19,11 +24,12 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 @CommandLine.Command(
         name = "sign",
-        description = "Sign payload to JWS (Compact or JSON). Supports detached and RFC 7797 (b64=false)."
+        description = "Sign payload to JWS (Compact or JSON). Supports detached, RFC 7797 (b64=false), keystore and optional JSON canonicalization (JCS). Also emits JSON4Signature* (payload text) and HASH4Signature* (digest of signing-input)."
 )
 public class SignCmd implements Runnable {
 
@@ -36,23 +42,19 @@ public class SignCmd implements Runnable {
     @CommandLine.Option(names="--out-format", required=true, description="compact | json")
     String outFormat;
 
-    // --- Variante A: Direkter Schlüssel (Datei) ---
+    // --- Private Key aus Datei ---
     @CommandLine.Option(names="--key-dir") Path keyDir;
     @CommandLine.Option(names="--key-file") String keyFile;
 
-    // --- Variante B: Keystore (PKCS12/JKS) ---
+    // --- Keystore (PKCS12/JKS) ---
     @CommandLine.Option(names="--keystore", description="Path to keystore file (.p12/.pfx/.jks)")
     Path keystorePath;
-
     @CommandLine.Option(names="--keystoreType", description="Keystore type: PKCS12 | JKS (default: PKCS12)")
     String keystoreType = "PKCS12";
-
     @CommandLine.Option(names="--keystorePassword", description="Keystore password")
     String keystorePassword;
-
     @CommandLine.Option(names="--keyAlias", description="Alias of the private key entry in keystore")
     String keyAlias;
-
     @CommandLine.Option(names="--keyPassword", description="Private key password (if different from keystore password)")
     String keyPassword;
 
@@ -64,19 +66,20 @@ public class SignCmd implements Runnable {
     // Detached / RFC 7797 (b64=false)
     @CommandLine.Option(names="--detached", description="Do not embed payload in the JWS (detached payload).")
     boolean detached;
-
     @CommandLine.Option(names="--b64false", description="Use RFC 7797 (unencoded payload); adds b64=false and crit:['b64'] to protected header.")
     boolean b64false;
 
-    // Protected-Header-Overrides + Einzelclaims
+    // Protected Header Steuerung
     @CommandLine.Option(names="--protectedHeaderFile", description="JSON file with protected header overrides (merged).")
     Path protectedHeaderFile;
-
     @CommandLine.Option(names="--sub", description="Sets/overrides 'sub' claim in protected header.")
     String subClaim;
-
     @CommandLine.Option(names="--sigT", description="Sets/overrides 'sigT' claim (use 'CURRENT' for now-UTC).")
     String sigTClaim;
+
+    // Payload-Kanonisierung
+    @CommandLine.Option(names="--canonicalize-payload", description="Canonicalize JSON payload before signing. Supported value: jcs")
+    String canonicalizePayload; // expected "jcs"
 
     @CommandLine.Option(names="--out", required=true, description="Output file for resulting JWS (compact or JSON)")
     Path outFile;
@@ -84,9 +87,9 @@ public class SignCmd implements Runnable {
     @Override
     public void run() {
         try {
-            new InitBC(); // Provider initialisieren (idempotent)
+            new InitBC(); // Provider initialisieren
 
-            // --- 0) Eingabevalidierung: Entweder Keystore ODER Datei ---
+            // --- 0) Eingabevalidierung Key-Quelle ---
             final boolean useKeystore = (keystorePath != null);
             if (useKeystore) {
                 if (keystorePassword == null)
@@ -98,13 +101,13 @@ public class SignCmd implements Runnable {
                     throw new IllegalArgumentException("Either provide --keystore ... OR --key-dir and --key-file.");
             }
 
-            // --- 1) Basis-Header aus CLI-Parametern ---
+            // --- 1) Protected Header aufbauen ---
             Map<String, Object> base = new LinkedHashMap<>();
             base.put("alg", alg);
             if (b64false) base.put("b64", false);
             if (x5u != null && !x5u.isBlank()) base.put("x5u", x5u);
 
-            // x5c optional aus PEM
+            // optional x5c-Kette
             if (certDir != null && certFile != null) {
                 CertificateLoader cl = new PEMCertificateLoader(certDir, certFile);
                 cl.load();
@@ -116,31 +119,41 @@ public class SignCmd implements Runnable {
                 }
             }
 
-            // --- 2) ProtectedHeader aufbauen + Datei-Overrides anwenden ---
             ProtectedHeader ph = new ProtectedHeader(base);
             if (protectedHeaderFile != null) {
                 String overridesJson = Files.readString(protectedHeaderFile, StandardCharsets.UTF_8);
                 ph.applyOverridesJson(overridesJson);
             }
-
-            // --- 3) Einzel-Claims (CLI) zuletzt anwenden (höchste Priorität) ---
             if (subClaim != null) ph.put("sub", subClaim);
             if (sigTClaim != null) ph.put("sigT", sigTClaim);
 
-            // --- 3a) Protected Header immer als Pretty + Base64URL ausgeben ---
             String protectedJsonCompact = ph.toCompactJson();
             String protectedJsonPretty  = ph.toPrettyJson();
             String protectedB64 = Base64.getUrlEncoder().withoutPadding()
                     .encodeToString(protectedJsonCompact.getBytes(StandardCharsets.UTF_8));
 
+            // Header-Preview
             System.out.println("=== Protected Header (final, pretty) ===");
             System.out.println(protectedJsonPretty);
             System.out.println("=== Protected Header (final, Base64URL) ===");
             System.out.println(protectedB64);
             System.out.println("=========================================");
 
-            // --- 4) Signing-Input erzeugen ---
-            byte[] payloadRaw = Files.readAllBytes(payloadFile);
+            // --- 2) Payload laden & ggf. JCS-kanonisieren ---
+            byte[] payloadOriginal = Files.readAllBytes(payloadFile);
+            byte[] payloadEffective = payloadOriginal;
+
+            boolean doCanonicalize = canonicalizePayload != null && canonicalizePayload.equalsIgnoreCase("jcs");
+            if (doCanonicalize) {
+                String raw = new String(payloadOriginal, StandardCharsets.UTF_8);
+                if (!looksLikeJson(raw)) {
+                    throw new IllegalArgumentException("--canonicalize-payload=jcs requires a valid JSON payload (object or array).");
+                }
+                String canonical = JsonCanonicalizerJcs.canonicalize(raw);
+                payloadEffective = canonical.getBytes(StandardCharsets.UTF_8);
+            }
+
+            // --- 3) Signing-Input erzeugen ---
             byte[] signingInputBytes;
             String payloadB64 = null;
             boolean headerB64False = Boolean.FALSE.equals(ph.asObjectMap().get("b64"));
@@ -150,13 +163,16 @@ public class SignCmd implements Runnable {
                     throw new IllegalArgumentException("Compact + b64=false erfordert --detached (Compact kann keine Roh-Payload einbetten).");
                 }
                 byte[] left = (protectedB64 + ".").getBytes(StandardCharsets.US_ASCII);
-                signingInputBytes = concat(left, payloadRaw);
+                signingInputBytes = concat(left, payloadEffective);
             } else {
-                payloadB64 = Base64.getUrlEncoder().withoutPadding().encodeToString(payloadRaw);
+                payloadB64 = Base64.getUrlEncoder().withoutPadding().encodeToString(payloadEffective);
                 signingInputBytes = (protectedB64 + "." + payloadB64).getBytes(StandardCharsets.US_ASCII);
             }
 
-            // --- 5) Private Key laden (Keystore ODER Datei) ---
+            // --- 3b) Artefakte: Payload-Text & Hash des Signing-Inputs ---
+            writePayloadTextAndHashArtifacts(payloadEffective, signingInputBytes, outFile, alg);
+
+            // --- 4) Private Key laden ---
             PrivateKey priv;
             if (useKeystore) {
                 Path ksDir  = keystorePath.getParent();
@@ -172,17 +188,15 @@ public class SignCmd implements Runnable {
                 );
                 ksLoader.load();
                 priv = ksLoader.getPrivateKey();
-                // Optional: Falls du die Kette aus dem Keystore für x5c nutzen willst:
-                // var ksChain = ksLoader.getCertificateChain();
             } else {
                 priv = PrivateKeyFactory.load(keyDir, keyFile);
             }
 
-            // --- 6) Signatur erzeugen ---
+            // --- 5) Signatur erzeugen ---
             byte[] sig = signJws(signingInputBytes, priv, alg);
             String sigB64 = Base64.getUrlEncoder().withoutPadding().encodeToString(sig);
 
-            // --- 7) Ergebnis zusammensetzen ---
+            // --- 6) Ausgabe (Compact/JSON) ---
             String result;
             if ("compact".equalsIgnoreCase(outFormat)) {
                 if (detached) {
@@ -203,7 +217,7 @@ public class SignCmd implements Runnable {
                             """.formatted(protectedB64, sigB64).trim();
                 } else {
                     if (headerB64False) {
-                        String rawText = Files.readString(payloadFile, StandardCharsets.UTF_8);
+                        String rawText = new String(payloadEffective, StandardCharsets.UTF_8);
                         String esc = jsonEscape(rawText);
                         result = """
                                 {
@@ -226,7 +240,6 @@ public class SignCmd implements Runnable {
                 throw new IllegalArgumentException("Unsupported --out-format: " + outFormat);
             }
 
-            // --- 8) Schreiben ---
             Files.writeString(outFile, result, StandardCharsets.UTF_8);
             System.out.println("Wrote: " + outFile.toAbsolutePath());
 
@@ -234,6 +247,42 @@ public class SignCmd implements Runnable {
             e.printStackTrace();
             System.exit(2);
         }
+    }
+
+    /* ====================== Artefakte gemäß neuer Anforderung ====================== */
+
+    private static void writePayloadTextAndHashArtifacts(byte[] payloadEffective,
+                                                         byte[] signingInputBytes,
+                                                         Path outFile,
+                                                         String alg) throws Exception {
+        Path baseDir = outFile.toAbsolutePath().getParent();
+        if (baseDir == null) baseDir = Path.of(".");
+        String outName = outFile.getFileName().toString();
+
+        Path json4SigPath = baseDir.resolve("JSON4Signature" + outName);
+        Path hash4SigPath = baseDir.resolve("HASH4Signature" + outName);
+
+        // a) Payload als Text (UTF-8). Bei Nicht-UTF-8 werden Ersatzzeichen verwendet.
+        CharsetDecoder dec = StandardCharsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPLACE)
+                .onUnmappableCharacter(CodingErrorAction.REPLACE);
+        String payloadText = dec.decode(java.nio.ByteBuffer.wrap(payloadEffective)).toString();
+        Files.writeString(json4SigPath, payloadText, StandardCharsets.UTF_8);
+
+        // b) Hash über den tatsächlichen Signing-Input
+        String digestAlg = switch (alg) {
+            case "ES256" -> "SHA-256";
+            case "ES384" -> "SHA-384";
+            case "ES512", "RS512", "PS512" -> "SHA-512";
+            default -> throw new IllegalArgumentException("Unsupported alg: " + alg);
+        };
+        MessageDigest md = MessageDigest.getInstance(digestAlg);
+        byte[] digest = md.digest(signingInputBytes);
+        String digestHex = toHexUpper(digest);
+        Files.writeString(hash4SigPath, digestHex + System.lineSeparator(), StandardCharsets.UTF_8);
+
+        System.out.println("Wrote JSON4Signature: " + json4SigPath);
+        System.out.println("Wrote HASH4Signature: " + hash4SigPath);
     }
 
     /* ====================== Signaturalgorithmen ====================== */
@@ -264,6 +313,7 @@ public class SignCmd implements Runnable {
                 Signature s = Signature.getInstance(jca);
                 s.initSign(key); s.update(signingInput);
                 byte[] derSig = s.sign();
+                // JWS erwartet R||S (raw). Provider liefert meist DER → transcodieren:
                 return EcdsaDer.transcodeDerToConcat(derSig, ecdsaFieldSizeBytes(alg));
             }
             default:
@@ -282,6 +332,14 @@ public class SignCmd implements Runnable {
 
     /* ====================== Helpers ====================== */
 
+    private static boolean looksLikeJson(String s) {
+        int i = 0, n = s.length();
+        while (i < n && Character.isWhitespace(s.charAt(i))) i++;
+        if (i >= n) return false;
+        char c = s.charAt(i);
+        return c == '{' || c == '[';
+    }
+
     private static String jsonEscape(String s) {
         return s.replace("\\","\\\\")
                 .replace("\"","\\\"")
@@ -293,7 +351,18 @@ public class SignCmd implements Runnable {
     private static byte[] concat(byte[] a, byte[] b) {
         byte[] out = new byte[a.length + b.length];
         System.arraycopy(a, 0, out, 0, a.length);
-        System.arraycopy(b, 0, out, a.length, b.length);
+        System.arraycopy(b, 0, out, a.length, b.length); // ✅ korrekt
         return out;
     }
+
+    private static String toHexUpper(byte[] data) {
+        StringBuilder sb = new StringBuilder(data.length * 2);
+        for (byte b : data) {
+            sb.append(Character.forDigit((b >>> 4) & 0xF, 16));
+            sb.append(Character.forDigit(b & 0xF, 16));
+        }
+        return sb.toString().toUpperCase(Locale.ROOT);
+    }
 }
+
+
