@@ -29,7 +29,7 @@ import java.util.Map;
 
 @CommandLine.Command(
         name = "sign",
-        description = "Sign payload to JWS (Compact or JSON). Supports detached, RFC 7797 (b64=false), keystore and optional JSON canonicalization (JCS). Also emits JSON4Signature* (payload text) and HASH4Signature* (digest of signing-input)."
+        description = "Sign payload to JWS (Compact or JSON). Supports detached, RFC 7797 (b64=false), keystore and optional JSON canonicalization (JCS). Emits JSON4Signature* (payload text) and HASH4Signature* (Base64 digest of signing-input)."
 )
 public class SignCmd implements Runnable {
 
@@ -127,12 +127,10 @@ public class SignCmd implements Runnable {
             if (subClaim != null) ph.put("sub", subClaim);
             if (sigTClaim != null) ph.put("sigT", sigTClaim);
 
-            // >>> NEU: etsiCanonicalization Header + crit, wenn --canonicalize-payload=jcs gesetzt <<<
+            // etsiCanonicalization bei --canonicalize-payload=jcs setzen + crit ergänzen
             boolean signalCanonicalization = (canonicalizePayload != null && canonicalizePayload.equalsIgnoreCase("jcs"));
             if (signalCanonicalization) {
-                // Claim setzen
                 ph.put("etsiCanonicalization", "http://json-canonicalization.org/algorithm");
-                // crit sicherstellen und ergänzen
                 Map<String, Object> hdr = ph.asObjectMap();
                 Object critObj = hdr.get("crit");
                 List<String> critList;
@@ -165,7 +163,7 @@ public class SignCmd implements Runnable {
             byte[] payloadOriginal = Files.readAllBytes(payloadFile);
             byte[] payloadEffective = payloadOriginal;
 
-            boolean doCanonicalize = signalCanonicalization; // gleiche Bedingung wie oben
+            boolean doCanonicalize = signalCanonicalization; // gleiche Bedingung wie Header-Claim
             if (doCanonicalize) {
                 String raw = new String(payloadOriginal, StandardCharsets.UTF_8);
                 if (!looksLikeJson(raw)) {
@@ -191,7 +189,7 @@ public class SignCmd implements Runnable {
                 signingInputBytes = (protectedB64 + "." + payloadB64).getBytes(StandardCharsets.US_ASCII);
             }
 
-            // --- 3b) Artefakte: Payload-Text & Hash des Signing-Inputs ---
+            // --- 3b) Artefakte: Payload-Text & Base64-Hash des Signing-Inputs ---
             writePayloadTextAndHashArtifacts(payloadEffective, signingInputBytes, outFile, alg);
 
             // --- 4) Private Key laden ---
@@ -271,7 +269,7 @@ public class SignCmd implements Runnable {
         }
     }
 
-    /* ====================== Artefakte gemäß neuer Anforderung ====================== */
+    /* ====================== Artefakte ====================== */
 
     private static void writePayloadTextAndHashArtifacts(byte[] payloadEffective,
                                                          byte[] signingInputBytes,
@@ -291,7 +289,7 @@ public class SignCmd implements Runnable {
         String payloadText = dec.decode(java.nio.ByteBuffer.wrap(payloadEffective)).toString();
         Files.writeString(json4SigPath, payloadText, StandardCharsets.UTF_8);
 
-        // b) Hash über den tatsächlichen Signing-Input
+        // b) Hash über den tatsächlichen Signing-Input → JAdES-konform Base64 (mit Padding)
         String digestAlg = switch (alg) {
             case "ES256" -> "SHA-256";
             case "ES384" -> "SHA-384";
@@ -300,8 +298,8 @@ public class SignCmd implements Runnable {
         };
         MessageDigest md = MessageDigest.getInstance(digestAlg);
         byte[] digest = md.digest(signingInputBytes);
-        String digestHex = toHexUpper(digest);
-        Files.writeString(hash4SigPath, digestHex + System.lineSeparator(), StandardCharsets.UTF_8);
+        String digestB64 = Base64.getEncoder().encodeToString(digest); // Standard-Base64 mit Padding
+        Files.writeString(hash4SigPath, digestB64 + System.lineSeparator(), StandardCharsets.UTF_8);
 
         System.out.println("Wrote JSON4Signature: " + json4SigPath);
         System.out.println("Wrote HASH4Signature: " + hash4SigPath);
@@ -386,4 +384,5 @@ public class SignCmd implements Runnable {
         return sb.toString().toUpperCase(Locale.ROOT);
     }
 }
+
 
