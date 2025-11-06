@@ -104,8 +104,8 @@ public class SignCmd implements Runnable {
             // --- 1) Protected Header aufbauen ---
             Map<String, Object> base = new LinkedHashMap<>();
             base.put("alg", alg);
-            if (b64false) base.put("b64", false);
             if (x5u != null && !x5u.isBlank()) base.put("x5u", x5u);
+            if (b64false) base.put("b64", false); // Wert selbst setzen (Kritikalität später)
 
             // optional x5c-Kette
             if (certDir != null && certFile != null) {
@@ -127,24 +127,17 @@ public class SignCmd implements Runnable {
             if (subClaim != null) ph.put("sub", subClaim);
             if (sigTClaim != null) ph.put("sigT", sigTClaim);
 
-            // etsiCanonicalization bei --canonicalize-payload=jcs setzen + crit ergänzen
+            // --- Kritische Felder sicherstellen ---
+            // 1) b64 → crit aufnehmen, wenn b64=false genutzt wird
+            if (b64false) {
+                ensureCritContains(ph, "b64");
+            }
+
+            // 2) etsiCanonicalization + crit aufnehmen, wenn JCS-Kanonisierung aktiv
             boolean signalCanonicalization = (canonicalizePayload != null && canonicalizePayload.equalsIgnoreCase("jcs"));
             if (signalCanonicalization) {
                 ph.put("etsiCanonicalization", "http://json-canonicalization.org/algorithm");
-                Map<String, Object> hdr = ph.asObjectMap();
-                Object critObj = hdr.get("crit");
-                List<String> critList;
-                if (critObj instanceof List) {
-                    @SuppressWarnings("unchecked")
-                    List<String> list = (List<String>) critObj;
-                    critList = list;
-                } else {
-                    critList = new ArrayList<>();
-                    hdr.put("crit", critList);
-                }
-                if (!critList.contains("etsiCanonicalization")) {
-                    critList.add("etsiCanonicalization");
-                }
+                ensureCritContains(ph, "etsiCanonicalization");
             }
 
             String protectedJsonCompact = ph.toCompactJson();
@@ -163,8 +156,7 @@ public class SignCmd implements Runnable {
             byte[] payloadOriginal = Files.readAllBytes(payloadFile);
             byte[] payloadEffective = payloadOriginal;
 
-            boolean doCanonicalize = signalCanonicalization; // gleiche Bedingung wie Header-Claim
-            if (doCanonicalize) {
+            if (signalCanonicalization) {
                 String raw = new String(payloadOriginal, StandardCharsets.UTF_8);
                 if (!looksLikeJson(raw)) {
                     throw new IllegalArgumentException("--canonicalize-payload=jcs requires a valid JSON payload (object or array).");
@@ -189,7 +181,7 @@ public class SignCmd implements Runnable {
                 signingInputBytes = (protectedB64 + "." + payloadB64).getBytes(StandardCharsets.US_ASCII);
             }
 
-            // --- 3b) Artefakte: Payload-Text & Base64-Hash des Signing-Inputs ---
+            // --- Artefakte: Payload-Text & Base64-Hash des Signing-Inputs ---
             writePayloadTextAndHashArtifacts(payloadEffective, signingInputBytes, outFile, alg);
 
             // --- 4) Private Key laden ---
@@ -282,14 +274,14 @@ public class SignCmd implements Runnable {
         Path json4SigPath = baseDir.resolve("JSON4Signature" + outName);
         Path hash4SigPath = baseDir.resolve("HASH4Signature" + outName);
 
-        // a) Payload als Text (UTF-8). Bei Nicht-UTF-8 werden Ersatzzeichen verwendet.
+        // Payload-Text (UTF-8; robust gegen Nicht-UTF-8)
         CharsetDecoder dec = StandardCharsets.UTF_8.newDecoder()
                 .onMalformedInput(CodingErrorAction.REPLACE)
                 .onUnmappableCharacter(CodingErrorAction.REPLACE);
         String payloadText = dec.decode(java.nio.ByteBuffer.wrap(payloadEffective)).toString();
         Files.writeString(json4SigPath, payloadText, StandardCharsets.UTF_8);
 
-        // b) Hash über den tatsächlichen Signing-Input → JAdES-konform Base64 (mit Padding)
+        // Hash des tatsächlichen Signing-Input (Base64 mit Padding)
         String digestAlg = switch (alg) {
             case "ES256" -> "SHA-256";
             case "ES384" -> "SHA-384";
@@ -298,7 +290,7 @@ public class SignCmd implements Runnable {
         };
         MessageDigest md = MessageDigest.getInstance(digestAlg);
         byte[] digest = md.digest(signingInputBytes);
-        String digestB64 = Base64.getEncoder().encodeToString(digest); // Standard-Base64 mit Padding
+        String digestB64 = Base64.getEncoder().encodeToString(digest);
         Files.writeString(hash4SigPath, digestB64 + System.lineSeparator(), StandardCharsets.UTF_8);
 
         System.out.println("Wrote JSON4Signature: " + json4SigPath);
@@ -333,7 +325,6 @@ public class SignCmd implements Runnable {
                 Signature s = Signature.getInstance(jca);
                 s.initSign(key); s.update(signingInput);
                 byte[] derSig = s.sign();
-                // JWS erwartet R||S (raw). Provider liefert meist DER → transcodieren:
                 return EcdsaDer.transcodeDerToConcat(derSig, ecdsaFieldSizeBytes(alg));
             }
             default:
@@ -351,6 +342,23 @@ public class SignCmd implements Runnable {
     }
 
     /* ====================== Helpers ====================== */
+
+    private static void ensureCritContains(ProtectedHeader ph, String name) {
+        // Immer über put("crit", ...) zurückschreiben → kein Verlassen auf asObjectMap()-Mutability
+        List<String> critList = null;
+        Object critObj = ph.asObjectMap().get("crit");
+        if (critObj instanceof List) {
+            @SuppressWarnings("unchecked")
+            List<String> l = (List<String>) critObj;
+            critList = new ArrayList<>(l); // Kopie, damit wir sicher sind
+        } else {
+            critList = new ArrayList<>();
+        }
+        if (!critList.contains(name)) {
+            critList.add(name);
+            ph.put("crit", critList); // ← entscheidend: zurück in den Header schreiben
+        }
+    }
 
     private static boolean looksLikeJson(String s) {
         int i = 0, n = s.length();
@@ -371,17 +379,8 @@ public class SignCmd implements Runnable {
     private static byte[] concat(byte[] a, byte[] b) {
         byte[] out = new byte[a.length + b.length];
         System.arraycopy(a, 0, out, 0, a.length);
-        System.arraycopy(b, 0, out, a.length, b.length); // ✅ korrekt
+        System.arraycopy(b, 0, out, a.length, b.length);
         return out;
-    }
-
-    private static String toHexUpper(byte[] data) {
-        StringBuilder sb = new StringBuilder(data.length * 2);
-        for (byte b : data) {
-            sb.append(Character.forDigit((b >>> 4) & 0xF, 16));
-            sb.append(Character.forDigit(b & 0xF, 16));
-        }
-        return sb.toString().toUpperCase(Locale.ROOT);
     }
 }
 
