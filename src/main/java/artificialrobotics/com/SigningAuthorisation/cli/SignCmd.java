@@ -7,7 +7,7 @@ import artificialrobotics.com.SigningAuthorisation.certificates.CertificateLoade
 import artificialrobotics.com.SigningAuthorisation.certificates.PEMCertificateLoader;
 import artificialrobotics.com.SigningAuthorisation.jose.ProtectedHeader;
 import artificialrobotics.com.SigningAuthorisation.json.JsonCanonicalizerJcs;
-import artificialrobotics.com.SigningAuthorisation.jose.EcdsaDer; // ✅ benötigt für ECDSA DER↔R||S
+import artificialrobotics.com.SigningAuthorisation.jose.EcdsaDer;
 
 import picocli.CommandLine;
 
@@ -127,6 +127,28 @@ public class SignCmd implements Runnable {
             if (subClaim != null) ph.put("sub", subClaim);
             if (sigTClaim != null) ph.put("sigT", sigTClaim);
 
+            // >>> NEU: etsiCanonicalization Header + crit, wenn --canonicalize-payload=jcs gesetzt <<<
+            boolean signalCanonicalization = (canonicalizePayload != null && canonicalizePayload.equalsIgnoreCase("jcs"));
+            if (signalCanonicalization) {
+                // Claim setzen
+                ph.put("etsiCanonicalization", "http://json-canonicalization.org/algorithm");
+                // crit sicherstellen und ergänzen
+                Map<String, Object> hdr = ph.asObjectMap();
+                Object critObj = hdr.get("crit");
+                List<String> critList;
+                if (critObj instanceof List) {
+                    @SuppressWarnings("unchecked")
+                    List<String> list = (List<String>) critObj;
+                    critList = list;
+                } else {
+                    critList = new ArrayList<>();
+                    hdr.put("crit", critList);
+                }
+                if (!critList.contains("etsiCanonicalization")) {
+                    critList.add("etsiCanonicalization");
+                }
+            }
+
             String protectedJsonCompact = ph.toCompactJson();
             String protectedJsonPretty  = ph.toPrettyJson();
             String protectedB64 = Base64.getUrlEncoder().withoutPadding()
@@ -143,7 +165,7 @@ public class SignCmd implements Runnable {
             byte[] payloadOriginal = Files.readAllBytes(payloadFile);
             byte[] payloadEffective = payloadOriginal;
 
-            boolean doCanonicalize = canonicalizePayload != null && canonicalizePayload.equalsIgnoreCase("jcs");
+            boolean doCanonicalize = signalCanonicalization; // gleiche Bedingung wie oben
             if (doCanonicalize) {
                 String raw = new String(payloadOriginal, StandardCharsets.UTF_8);
                 if (!looksLikeJson(raw)) {
@@ -364,5 +386,4 @@ public class SignCmd implements Runnable {
         return sb.toString().toUpperCase(Locale.ROOT);
     }
 }
-
 
