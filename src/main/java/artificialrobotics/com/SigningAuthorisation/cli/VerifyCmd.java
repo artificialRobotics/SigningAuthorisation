@@ -3,6 +3,7 @@ package artificialrobotics.com.SigningAuthorisation.cli;
 import artificialrobotics.com.SigningAuthorisation.InitBC;
 import artificialrobotics.com.SigningAuthorisation.certificates.PEMCertificateLoader;
 import artificialrobotics.com.SigningAuthorisation.json.JsonCanonicalizerJcs;
+import artificialrobotics.com.SigningAuthorisation.jose.EcdsaDer;
 import artificialrobotics.com.SigningAuthorisation.signingKeys.PublicKeyFactory;
 import eu.europa.esig.dss.enumerations.MimeTypeEnum;
 import eu.europa.esig.dss.model.DSSDocument;
@@ -28,10 +29,10 @@ public class VerifyCmd implements Runnable {
     @CommandLine.Option(names = "--mode", required = true, description = "crypto | eidas")
     String mode;
 
-    @CommandLine.Option(names = "--alg", required = true, description = "RS512 | PS512 | ES256 | ES384 | ES512")
+    @CommandLine.Option(names = "--alg", required = true, description = "RS512 | PS512 | ES256 | ES384 | ES512 | ph")
     String alg;
 
-    @CommandLine.Option(names = "--in", required = true, description = "JWS input file (compact OR JSON serialization)")
+    @CommandLine.Option(names = "--in", required = true, description = "JWS input file (compact OR JSON serialization; BG wrapper supported).")
     Path inFile;
 
     // Für crypto-only: Public Key oder Zertifikat angeben
@@ -48,7 +49,7 @@ public class VerifyCmd implements Runnable {
     @CommandLine.Option(names = "--payload", description = "Detached payload file (raw bytes). Required for detached or b64=false.")
     Path payloadFile;
 
-    // NEU: optionale Kanonisierung für die externe Payload-Datei
+    // Optionale Kanonisierung für die externe Payload-Datei
     @CommandLine.Option(names = "--canonicalize-payload", description = "Apply canonicalization to detached payload before verification. Supported value: jcs")
     String canonicalizePayload; // expected "jcs"
 
@@ -65,13 +66,13 @@ public class VerifyCmd implements Runnable {
             }
 
             // --- CRYPTO-ONLY VERIFIKATION ---
-            // 1) Zerlegen: Compact oder JSON?
+            // 1) Zerlegen: Compact oder JSON/BG?
             String protectedB64;
             String payloadB64 = null;     // kann leer sein (detached)
             String signatureB64;
 
             if (isJsonSerialization(content)) {
-                // JSON Serialization (single signature erwartet)
+                // JSON- oder BG-Serialization (single signature erwartet)
                 protectedB64 = extractJsonValue(content, "\"protected\"");
                 signatureB64 = extractJsonValue(content, "\"signature\"");
                 // payload kann fehlen (detached) – nur nutzen, wenn vorhanden
@@ -87,10 +88,20 @@ public class VerifyCmd implements Runnable {
                 signatureB64 = parts[2];
             }
 
-            // 2) b64=false ermitteln (aus Protected Header)
+            // 2) Protected Header decodieren (für b64=false, alg=ph, etc.)
             byte[] protectedJson = Base64.getUrlDecoder().decode(protectedB64);
             String protectedStr  = new String(protectedJson, StandardCharsets.UTF_8);
             boolean b64false = protectedStr.contains("\"b64\":false");
+
+            // 2a) Falls --alg=ph: Algorithmus aus Protected Header ermitteln
+            String resolvedAlg = alg;
+            if ("ph".equalsIgnoreCase(alg)) {
+                String headerAlg = extractJsonValue(protectedStr, "\"alg\"");
+                if (headerAlg == null || headerAlg.isEmpty()) {
+                    throw new IllegalArgumentException("Protected header does not contain an 'alg' claim.");
+                }
+                resolvedAlg = headerAlg;
+            }
 
             // 3) Signing-Input bilden (RFC 7515 / RFC 7797)
             byte[] signingInput;
@@ -99,7 +110,7 @@ public class VerifyCmd implements Runnable {
                     throw new IllegalArgumentException("b64=false erfordert --payload mit den ROH-Bytes der Nutzlast.");
                 }
                 byte[] left = (protectedB64 + ".").getBytes(StandardCharsets.US_ASCII);
-                byte[] raw  = loadDetachedPayloadPossiblyCanonicalized(); // NEU: ggf. JCS
+                byte[] raw  = loadDetachedPayloadPossiblyCanonicalized(); // ggf. JCS
                 signingInput = concat(left, raw);
             } else {
                 if (detached) {
@@ -107,7 +118,7 @@ public class VerifyCmd implements Runnable {
                     if (payloadFile == null) {
                         throw new IllegalArgumentException("detached erfordert --payload (für b64=true).");
                     }
-                    byte[] raw = loadDetachedPayloadPossiblyCanonicalized(); // NEU: ggf. JCS
+                    byte[] raw = loadDetachedPayloadPossiblyCanonicalized(); // ggf. JCS
                     payloadB64 = Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
                 } else {
                     // eingebettet -> payloadB64 muss vorhanden sein
@@ -140,7 +151,7 @@ public class VerifyCmd implements Runnable {
             }
 
             // 5) Kryptografisch verifizieren
-            boolean ok = verifyJws(signingInput, sig, pub, alg);
+            boolean ok = verifyJws(signingInput, sig, pub, resolvedAlg);
             System.out.println("VALID (crypto-only): " + ok);
 
         } catch (Exception e) {
@@ -230,7 +241,7 @@ public class VerifyCmd implements Runnable {
                 v.initVerify(pub);
                 v.update(signingInput);
                 // JWS liefert R||S (raw), viele Provider erwarten DER -> umwandeln:
-                byte[] der = EcdsaConcatToDer.concatToDer(sig, ecdsaFieldSizeBytes(alg));
+                byte[] der = EcdsaDer.transcodeConcatToDer(sig, ecdsaFieldSizeBytes(alg));
                 return v.verify(der);
             }
             default:
@@ -250,7 +261,7 @@ public class VerifyCmd implements Runnable {
     /* ====================== HILFSFUNKTIONEN ====================== */
 
     private static boolean isJsonSerialization(String s) {
-        // sehr einfache Heuristik: JSON-Serialization enthält "protected" und "signature" Felder
+        // Heuristik: JSON-Serialization (inkl. BG-Wrapper) enthält "protected" und "signature" Felder
         return s.contains("\"protected\"") && s.contains("\"signature\"");
     }
 

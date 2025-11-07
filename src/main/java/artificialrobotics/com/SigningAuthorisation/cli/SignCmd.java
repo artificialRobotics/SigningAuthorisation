@@ -29,17 +29,26 @@ import java.util.Map;
 
 @CommandLine.Command(
         name = "sign",
-        description = "Sign payload to JWS (Compact or JSON). Supports detached, RFC 7797 (b64=false), keystore and optional JSON canonicalization (JCS). Emits JSON4Signature* (payload text) and HASH4Signature* (Base64 digest of signing-input)."
+        description = "Sign payload to JWS (Compact, JSON or BG). Supports detached, RFC 7797 (b64=false), keystore and optional JSON canonicalization (JCS). Emits JSON4Signature* (payload text) and HASH4Signature* (Base64 digest of signing-input)."
 )
 public class SignCmd implements Runnable {
 
-    @CommandLine.Option(names="--alg", required=true, description="RS512 | PS512 | ES256 | ES384 | ES512")
+    @CommandLine.Option(
+            names="--alg",
+            required=true,
+            description="RS512 | PS512 | ES256 | ES384 | ES512")
     String alg;
 
-    @CommandLine.Option(names="--payload", required=true, description="Payload file; bytes are signed")
+    @CommandLine.Option(
+            names="--payload",
+            required=true,
+            description="Payload file; bytes are signed")
     Path payloadFile;
 
-    @CommandLine.Option(names="--out-format", required=true, description="compact | json")
+    @CommandLine.Option(
+            names="--out-format",
+            required=true,
+            description="compact | json | bg (Berlin Group format)")
     String outFormat;
 
     // --- Private Key aus Datei ---
@@ -81,7 +90,10 @@ public class SignCmd implements Runnable {
     @CommandLine.Option(names="--canonicalize-payload", description="Canonicalize JSON payload before signing. Supported value: jcs")
     String canonicalizePayload; // expected "jcs"
 
-    @CommandLine.Option(names="--out", required=true, description="Output file for resulting JWS (compact or JSON)")
+    @CommandLine.Option(
+            names="--out",
+            required=true,
+            description="Output file for resulting JWS (compact, JSON, or BG)")
     Path outFile;
 
     @Override
@@ -105,7 +117,7 @@ public class SignCmd implements Runnable {
             Map<String, Object> base = new LinkedHashMap<>();
             base.put("alg", alg);
             if (x5u != null && !x5u.isBlank()) base.put("x5u", x5u);
-            if (b64false) base.put("b64", false); // Wert selbst setzen (Kritikalität später)
+            if (b64false) base.put("b64", false);
 
             // optional x5c-Kette
             if (certDir != null && certFile != null) {
@@ -127,13 +139,9 @@ public class SignCmd implements Runnable {
             if (subClaim != null) ph.put("sub", subClaim);
             if (sigTClaim != null) ph.put("sigT", sigTClaim);
 
-            // --- Kritische Felder sicherstellen ---
-            // 1) b64 → crit aufnehmen, wenn b64=false genutzt wird
-            if (b64false) {
-                ensureCritContains(ph, "b64");
-            }
+            // --- Kritische Header Claims sicherstellen ---
+            if (b64false) ensureCritContains(ph, "b64");
 
-            // 2) etsiCanonicalization + crit aufnehmen, wenn JCS-Kanonisierung aktiv
             boolean signalCanonicalization = (canonicalizePayload != null && canonicalizePayload.equalsIgnoreCase("jcs"));
             if (signalCanonicalization) {
                 ph.put("etsiCanonicalization", "http://json-canonicalization.org/algorithm");
@@ -145,7 +153,7 @@ public class SignCmd implements Runnable {
             String protectedB64 = Base64.getUrlEncoder().withoutPadding()
                     .encodeToString(protectedJsonCompact.getBytes(StandardCharsets.UTF_8));
 
-            // Header-Preview
+            // --- Ausgabe Header Info ---
             System.out.println("=== Protected Header (final, pretty) ===");
             System.out.println(protectedJsonPretty);
             System.out.println("=== Protected Header (final, Base64URL) ===");
@@ -159,7 +167,7 @@ public class SignCmd implements Runnable {
             if (signalCanonicalization) {
                 String raw = new String(payloadOriginal, StandardCharsets.UTF_8);
                 if (!looksLikeJson(raw)) {
-                    throw new IllegalArgumentException("--canonicalize-payload=jcs requires a valid JSON payload (object or array).");
+                    throw new IllegalArgumentException("--canonicalize-payload=jcs requires valid JSON payload.");
                 }
                 String canonical = JsonCanonicalizerJcs.canonicalize(raw);
                 payloadEffective = canonical.getBytes(StandardCharsets.UTF_8);
@@ -181,7 +189,7 @@ public class SignCmd implements Runnable {
                 signingInputBytes = (protectedB64 + "." + payloadB64).getBytes(StandardCharsets.US_ASCII);
             }
 
-            // --- Artefakte: Payload-Text & Base64-Hash des Signing-Inputs ---
+            // Artefakte schreiben
             writePayloadTextAndHashArtifacts(payloadEffective, signingInputBytes, outFile, alg);
 
             // --- 4) Private Key laden ---
@@ -208,47 +216,31 @@ public class SignCmd implements Runnable {
             byte[] sig = signJws(signingInputBytes, priv, alg);
             String sigB64 = Base64.getUrlEncoder().withoutPadding().encodeToString(sig);
 
-            // --- 6) Ausgabe (Compact/JSON) ---
+            // --- 6) Ausgabe ---
             String result;
             if ("compact".equalsIgnoreCase(outFormat)) {
-                if (detached) {
-                    result = protectedB64 + ".." + sigB64;
-                } else {
-                    if (headerB64False) {
-                        throw new IllegalArgumentException("Compact eingebettet mit b64=false ist nicht zulässig. Nutze --detached oder JSON.");
-                    }
-                    result = protectedB64 + "." + payloadB64 + "." + sigB64;
-                }
-            } else if ("json".equalsIgnoreCase(outFormat)) {
-                if (detached) {
-                    result = """
-                            {
-                              "protected":"%s",
-                              "signature":"%s"
-                            }
-                            """.formatted(protectedB64, sigB64).trim();
-                } else {
-                    if (headerB64False) {
-                        String rawText = new String(payloadEffective, StandardCharsets.UTF_8);
-                        String esc = jsonEscape(rawText);
-                        result = """
-                                {
-                                  "payload":"%s",
-                                  "protected":"%s",
-                                  "signature":"%s"
-                                }
-                                """.formatted(esc, protectedB64, sigB64).trim();
-                    } else {
-                        result = """
-                                {
-                                  "payload":"%s",
-                                  "protected":"%s",
-                                  "signature":"%s"
-                                }
-                                """.formatted(payloadB64, protectedB64, sigB64).trim();
-                    }
-                }
-            } else {
+                result = detached
+                        ? protectedB64 + ".." + sigB64
+                        : protectedB64 + "." + payloadB64 + "." + sigB64;
+            }
+            else if ("json".equalsIgnoreCase(outFormat)) {
+                result = detached
+                        ? String.format("{\"protected\":\"%s\",\"signature\":\"%s\"}", protectedB64, sigB64)
+                        : String.format("{\"payload\":\"%s\",\"protected\":\"%s\",\"signature\":\"%s\"}",
+                                payloadB64, protectedB64, sigB64);
+            }
+            else if ("bg".equalsIgnoreCase(outFormat)) {
+                // Berlin Group Format (detached)
+                result = """
+                        {
+                          "signatureData": {
+                            "protected": "%s",
+                            "signature": "%s"
+                          }
+                        }
+                        """.formatted(protectedB64, sigB64).trim();
+            }
+            else {
                 throw new IllegalArgumentException("Unsupported --out-format: " + outFormat);
             }
 
@@ -261,7 +253,23 @@ public class SignCmd implements Runnable {
         }
     }
 
-    /* ====================== Artefakte ====================== */
+    /* ====================== Helper-Methoden ====================== */
+
+    private static void ensureCritContains(ProtectedHeader ph, String name) {
+        List<String> critList;
+        Object critObj = ph.asObjectMap().get("crit");
+        if (critObj instanceof List) {
+            @SuppressWarnings("unchecked")
+            List<String> l = (List<String>) critObj;
+            critList = new ArrayList<>(l);
+        } else {
+            critList = new ArrayList<>();
+        }
+        if (!critList.contains(name)) {
+            critList.add(name);
+            ph.put("crit", critList); // wichtig: zurück in den Header schreiben
+        }
+    }
 
     private static void writePayloadTextAndHashArtifacts(byte[] payloadEffective,
                                                          byte[] signingInputBytes,
@@ -274,14 +282,12 @@ public class SignCmd implements Runnable {
         Path json4SigPath = baseDir.resolve("JSON4Signature" + outName);
         Path hash4SigPath = baseDir.resolve("HASH4Signature" + outName);
 
-        // Payload-Text (UTF-8; robust gegen Nicht-UTF-8)
         CharsetDecoder dec = StandardCharsets.UTF_8.newDecoder()
                 .onMalformedInput(CodingErrorAction.REPLACE)
                 .onUnmappableCharacter(CodingErrorAction.REPLACE);
         String payloadText = dec.decode(java.nio.ByteBuffer.wrap(payloadEffective)).toString();
         Files.writeString(json4SigPath, payloadText, StandardCharsets.UTF_8);
 
-        // Hash des tatsächlichen Signing-Input (Base64 mit Padding)
         String digestAlg = switch (alg) {
             case "ES256" -> "SHA-256";
             case "ES384" -> "SHA-384";
@@ -290,45 +296,41 @@ public class SignCmd implements Runnable {
         };
         MessageDigest md = MessageDigest.getInstance(digestAlg);
         byte[] digest = md.digest(signingInputBytes);
-        String digestB64 = Base64.getEncoder().encodeToString(digest);
+        String digestB64 = Base64.getEncoder().encodeToString(digest); // Base64 mit Padding
         Files.writeString(hash4SigPath, digestB64 + System.lineSeparator(), StandardCharsets.UTF_8);
-
-        System.out.println("Wrote JSON4Signature: " + json4SigPath);
-        System.out.println("Wrote HASH4Signature: " + hash4SigPath);
     }
-
-    /* ====================== Signaturalgorithmen ====================== */
 
     private static byte[] signJws(byte[] signingInput, PrivateKey key, String alg) throws Exception {
         switch (alg) {
-            case "RS512": {
+            case "RS512" -> {
                 Signature s = Signature.getInstance("SHA512withRSA");
-                s.initSign(key); s.update(signingInput); return s.sign();
+                s.initSign(key);
+                s.update(signingInput);
+                return s.sign();
             }
-            case "PS512": {
+            case "PS512" -> {
                 Signature s = Signature.getInstance("RSASSA-PSS");
                 PSSParameterSpec pss = new PSSParameterSpec(
                         "SHA-512", "MGF1",
-                        new java.security.spec.MGF1ParameterSpec("SHA-512"),
-                        64, 1);
+                        new java.security.spec.MGF1ParameterSpec("SHA-512"), 64, 1);
                 s.setParameter(pss);
-                s.initSign(key); s.update(signingInput); return s.sign();
+                s.initSign(key);
+                s.update(signingInput);
+                return s.sign();
             }
-            case "ES256":
-            case "ES384":
-            case "ES512": {
+            case "ES256", "ES384", "ES512" -> {
                 String jca = switch (alg) {
                     case "ES256" -> "SHA256withECDSA";
                     case "ES384" -> "SHA384withECDSA";
                     default -> "SHA512withECDSA";
                 };
                 Signature s = Signature.getInstance(jca);
-                s.initSign(key); s.update(signingInput);
+                s.initSign(key);
+                s.update(signingInput);
                 byte[] derSig = s.sign();
                 return EcdsaDer.transcodeDerToConcat(derSig, ecdsaFieldSizeBytes(alg));
             }
-            default:
-                throw new IllegalArgumentException("Unsupported alg: " + alg);
+            default -> throw new IllegalArgumentException("Unsupported alg: " + alg);
         }
     }
 
@@ -336,28 +338,9 @@ public class SignCmd implements Runnable {
         return switch (alg) {
             case "ES256" -> 32;
             case "ES384" -> 48;
-            case "ES512" -> 66; // P-521
+            case "ES512" -> 66;
             default -> throw new IllegalArgumentException("Unknown ECDSA alg: " + alg);
         };
-    }
-
-    /* ====================== Helpers ====================== */
-
-    private static void ensureCritContains(ProtectedHeader ph, String name) {
-        // Immer über put("crit", ...) zurückschreiben → kein Verlassen auf asObjectMap()-Mutability
-        List<String> critList = null;
-        Object critObj = ph.asObjectMap().get("crit");
-        if (critObj instanceof List) {
-            @SuppressWarnings("unchecked")
-            List<String> l = (List<String>) critObj;
-            critList = new ArrayList<>(l); // Kopie, damit wir sicher sind
-        } else {
-            critList = new ArrayList<>();
-        }
-        if (!critList.contains(name)) {
-            critList.add(name);
-            ph.put("crit", critList); // ← entscheidend: zurück in den Header schreiben
-        }
     }
 
     private static boolean looksLikeJson(String s) {
@@ -366,14 +349,6 @@ public class SignCmd implements Runnable {
         if (i >= n) return false;
         char c = s.charAt(i);
         return c == '{' || c == '[';
-    }
-
-    private static String jsonEscape(String s) {
-        return s.replace("\\","\\\\")
-                .replace("\"","\\\"")
-                .replace("\r","\\r")
-                .replace("\n","\\n")
-                .replace("\t","\\t");
     }
 
     private static byte[] concat(byte[] a, byte[] b) {
