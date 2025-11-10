@@ -1,0 +1,1 @@
+java -jar ../target/SigningAuthorisation-0.0.1-SNAPSHOT-all.jar verify --mode crypto --alg PS512 --in .\MyJSON_ps512_compact_detached.jws --pub-dir .\ --pub-file meine_test_gmbh_cert.pem --payload MyJSON.json --detached
