@@ -4,29 +4,31 @@ import java.math.BigDecimal;
 import java.util.*;
 
 /**
- * Minimaler JSON Canonicalizer nach JCS-Ideen (RFC 8785, pragmatische Teilmenge).
+ * JSON Canonicalizer angelehnt an RFC 8785 (JCS – JSON Canonicalization Scheme).
  *
- * Merkmale:
- *  - Objekt-Schlüssel lexikographisch nach Unicode Code-Points sortiert
- *  - Arrays bleiben in Originalreihenfolge
- *  - Strings werden JSON-escaped ausgegeben
- *  - Zahlen werden über BigDecimal normalisiert:
- *      * keine Exponentendarstellung
- *      * keine führenden +/-
- *      * keine überflüssigen Nullen (stripTrailingZeros)
- *      * "-0" -> "0"
+ * Eigenschaften:
+ *  - Objekt-Schlüssel werden lexikographisch nach UTF-16 Code Units sortiert
+ *  - Arrays behalten ihre ursprüngliche Reihenfolge
+ *  - Strings werden JSON-konform escaped; alle U+0000..U+001F stets als \\u00xx (keine Kurz-Escapes)
+ *  - Zahlen werden via BigDecimal minimal dargestellt:
+ *      * keine Exponentendarstellung (toPlainString)
+ *      * stripTrailingZeros
+ *      * "-0" → "0"
  *  - true/false/null bleiben erhalten
  *
+ * Parser (streng nach JSON):
+ *  - Führende Nullen im Integerteil sind nicht erlaubt (außer "0" selbst)
+ *  - Zahlen werden als BigDecimal geparst (keine NaN/Infinity)
+ *
  * Hinweis:
- *  Diese Implementierung deckt typische Payloads stabil ab, ist aber bewusst
- *  "pragmatisch". Für 100% RFC-8785-Konformität in allen Randfällen ggf. eine
- *  dedizierte JCS-Bibliothek einsetzen.
+ *  Diese Implementierung zielt auf JCS-Konformität für typische Payloads.
+ *  Für vollständige Randfallabdeckung kann eine dedizierte JCS-Referenzbibliothek eingesetzt werden.
  */
 public final class JsonCanonicalizerJcs {
 
     private JsonCanonicalizerJcs() {}
 
-    /** Kanonisiert ein JSON-Document (Objekt oder Array) zu einer stabilen String-Repräsentation. */
+    /** Kanonisiert ein JSON-Dokument (Objekt oder Array) zu einer stabilen String-Repräsentation. */
     public static String canonicalize(String json) {
         Parser p = new Parser(json);
         Object v = p.parseAny();
@@ -54,7 +56,7 @@ public final class JsonCanonicalizerJcs {
             return;
         }
         if (v instanceof Map<?, ?> map) {
-            // Schlüssel sortieren (Unicode Code-Point Reihenfolge)
+            // Schlüssel sortieren (UTF-16 Code Unit Reihenfolge)
             List<String> keys = new ArrayList<>();
             for (Object k : map.keySet()) keys.add((String) k);
             Collections.sort(keys);
@@ -69,37 +71,56 @@ public final class JsonCanonicalizerJcs {
             sb.append('}');
             return;
         }
-        // Fallback: als String
+        // Fallback (sollte nicht vorkommen): als String
         writeString(String.valueOf(v), sb);
     }
 
+    /**
+     * String-Ausgabe: JSON-escaping.
+     * JCS fordert: alle Steuerzeichen U+0000..U+001F als \\u00xx.
+     * Zudem werden Anführungszeichen und Backslash per \" bzw. \\ escaped.
+     */
     private static void writeString(String s, StringBuilder sb) {
         sb.append('"');
         for (int i = 0; i < s.length(); i++) {
             char ch = s.charAt(i);
-            switch (ch) {
-                case '"' -> sb.append("\\\"");
-                case '\\' -> sb.append("\\\\");
-                case '\b' -> sb.append("\\b");
-                case '\f' -> sb.append("\\f");
-                case '\n' -> sb.append("\\n");
-                case '\r' -> sb.append("\\r");
-                case '\t' -> sb.append("\\t");
-                default -> {
-                    if (ch < 0x20) sb.append(String.format("\\u%04x", (int) ch));
-                    else sb.append(ch);
-                }
+            if (ch == '"')  { sb.append("\\\""); continue; }
+            if (ch == '\\') { sb.append("\\\\"); continue; }
+            if (ch < 0x20) {
+                // Immer \\u00xx (keine Kurz-Escapes), gem. RFC 8785
+                sb.append("\\u").append(hex4(ch));
+                continue;
             }
+            sb.append(ch);
         }
         sb.append('"');
     }
 
+    /** Wandelt einen char (0..0xFFFF) in vierstellige Hex (lowercase) um. */
+    private static String hex4(int ch) {
+        String h = Integer.toHexString(ch);
+        return "0000".substring(h.length()) + h;
+    }
+
+    /**
+     * Zahlen-Ausgabe in Minimalform:
+     *  - stripTrailingZeros
+     *  - toPlainString (keine Exponentendarstellung)
+     *  - "-0" → "0"
+     */
     private static String numberToString(BigDecimal bd) {
         bd = bd.stripTrailingZeros();
         String s = bd.toPlainString();
-        // "-0" -> "0"
-        if (s.startsWith("-0") && (s.length() == 2 || (s.length() > 2 && s.charAt(2) == '.'))) {
-            s = s.substring(1);
+        // "-0" oder "-0.xxx" → "0" bzw. "0.xxx"
+        if (s.startsWith("-0")) {
+            if (s.length() == 2) {
+                // "-0"
+                return "0";
+            }
+            if (s.length() > 2 && s.charAt(2) == '.') {
+                // "-0.xxx" → ohne Minus
+                return s.substring(1);
+            }
         }
         return s;
     }
@@ -107,10 +128,10 @@ public final class JsonCanonicalizerJcs {
     /* ====================== Parser ====================== */
 
     /**
-     * Sehr einfacher JSON-Parser in ein Intermediate Model:
-     *  - Objekt: Map<String,Object> (LinkedHashMap in Eingabereihenfolge)
+     * Einfacher JSON-Parser in ein Intermediate Model:
+     *  - Objekt: Map<String,Object> (LinkedHashMap in Eingabereihenfolge; Duplikate überschreiben vorangehende)
      *  - Array:  List<Object>
-     *  - Zahl:   BigDecimal
+     *  - Zahl:   BigDecimal (strenges JSON, keine führenden Nullen, keine NaN/Infinity)
      *  - String: String
      *  - true/false/null → Boolean/Null
      */
@@ -178,7 +199,11 @@ public final class JsonCanonicalizerJcs {
                             if (i+4 > s.length()) throw err("Bad \\u escape");
                             String hex = s.substring(i, i+4);
                             i += 4;
-                            sb.append((char) Integer.parseInt(hex, 16));
+                            try {
+                                sb.append((char) Integer.parseInt(hex, 16));
+                            } catch (NumberFormatException ex) {
+                                throw err("Bad \\u escape digits");
+                            }
                         }
                         default -> throw err("Bad escape: \\"+e);
                     }
@@ -189,27 +214,51 @@ public final class JsonCanonicalizerJcs {
             throw err("Unterminated string");
         }
 
+        /**
+         * Zahl-Parser (streng nach JSON):
+         *  - Optionales Minus
+         *  - Integerteil: entweder "0" ODER keine führende 0
+         *  - Optional Fraction: '.' DIGITS+
+         *  - Optional Exponent: [eE] ['+'|'-']? DIGITS+
+         *  - Übergabe an BigDecimal
+         */
         BigDecimal parseNumber() {
             int start = i;
+
+            // optional '-'
             if (s.charAt(i) == '-') i++;
-            int intStart = i;
-            while (i < s.length() && Character.isDigit(s.charAt(i))) i++;
-            boolean hasInt = i > intStart;
-            boolean hasFrac = false, hasExp = false;
+
+            // Integerteil
+            if (i >= s.length() || !Character.isDigit(s.charAt(i))) {
+                throw err("Invalid number");
+            }
+            if (s.charAt(i) == '0') {
+                i++;
+                // keine weiteren Ziffern direkt nach '0' erlaubt (außer '.' oder 'e/E')
+                if (i < s.length() && Character.isDigit(s.charAt(i))) {
+                    throw err("Leading zero in integer part");
+                }
+            } else {
+                while (i < s.length() && Character.isDigit(s.charAt(i))) i++;
+            }
+
+            // Fraction
             if (i < s.length() && s.charAt(i) == '.') {
-                hasFrac = true; i++;
+                i++;
                 int fracStart = i;
                 while (i < s.length() && Character.isDigit(s.charAt(i))) i++;
                 if (i == fracStart) throw err("Invalid fraction");
             }
+
+            // Exponent
             if (i < s.length() && (s.charAt(i) == 'e' || s.charAt(i) == 'E')) {
-                hasExp = true; i++;
+                i++;
                 if (i < s.length() && (s.charAt(i) == '+' || s.charAt(i) == '-')) i++;
                 int expStart = i;
                 while (i < s.length() && Character.isDigit(s.charAt(i))) i++;
                 if (i == expStart) throw err("Invalid exponent");
             }
-            if (!hasInt) throw err("Invalid number");
+
             String num = s.substring(start, i);
             try {
                 return new BigDecimal(num);

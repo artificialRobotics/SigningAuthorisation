@@ -23,77 +23,106 @@ import java.security.spec.PSSParameterSpec;
 import java.util.Base64;
 import java.util.List;
 
+/**
+ * # VerifyCmd
+ *
+ * Verifies JWS/JAdES signatures in two modes:
+ *  - **crypto**: local, crypto-only verification against a provided public key/certificate.
+ *  - **eidas** : verification via DSS (ETSI TS 119 102/119 182 world), enabling trust services, revocation, etc.
+ *
+ * Supported inputs:
+ *  - **JWS Compact Serialization** (RFC 7515 §3.1)
+ *  - **JWS JSON Serialization** (RFC 7515 §7.2; single signature object)
+ *  - **Berlin Group wrapper** (domain JSON with `signatureData.protected`/`signatureData.signature`)
+ *
+ * Detached & RFC 7797:
+ *  - **Detached payload** supported. Provide `--payload` with the original bytes.
+ *  - **Unencoded payload** (`"b64": false`, RFC 7797) supported. Requires raw payload bytes and
+ *    the signing input must be built as `ASCII(Base64URL(protected) + ".") || RAW(payload)`.
+ *
+ * Canonicalization:
+ *  - Optional **JCS** (RFC 8785) can be applied to the *external* detached payload before verification
+ *    using `--canonicalize-payload=jcs` (must be valid JSON object/array). This must match the signer’s process.
+ *
+ * Algorithm resolution:
+ *  - `--alg=ph` reads the `alg` from the **protected header** (RFC 7515 §4).
+ */
 @CommandLine.Command(name = "verify", description = "Verify JWS/JAdES (crypto-only or eIDAS/DSS).")
 public class VerifyCmd implements Runnable {
 
+    // Mode selection: local crypto vs DSS-based validation
     @CommandLine.Option(names = "--mode", required = true, description = "crypto | eidas")
     String mode;
 
+    // Algorithm: explicit (RS512|PS512|ES256|ES384|ES512) or resolve from Protected Header (ph)
     @CommandLine.Option(names = "--alg", required = true, description = "RS512 | PS512 | ES256 | ES384 | ES512 | ph")
     String alg;
 
+    // Input JWS (Compact or JSON; BG wrapper is also recognized)
     @CommandLine.Option(names = "--in", required = true, description = "JWS input file (compact OR JSON serialization; BG wrapper supported).")
     Path inFile;
 
-    // Für crypto-only: Public Key oder Zertifikat angeben
+    // Public key material for crypto-only mode
     @CommandLine.Option(names = "--pub-dir", description = "Directory of public key / certificate")
     Path pubDir;
-
     @CommandLine.Option(names = "--pub-file", description = "File name of public key / certificate")
     String pubFile;
 
-    // Detached / b64=false Unterstützung
+    // Detached / RFC 7797 support
     @CommandLine.Option(names = "--detached", description = "Treat input as detached JWS. Provide --payload for verification.")
     boolean detached;
-
     @CommandLine.Option(names = "--payload", description = "Detached payload file (raw bytes). Required for detached or b64=false.")
     Path payloadFile;
 
-    // Optionale Kanonisierung für die externe Payload-Datei
+    // Optional canonicalization for *external* payload (must match signer)
     @CommandLine.Option(names = "--canonicalize-payload", description = "Apply canonicalization to detached payload before verification. Supported value: jcs")
     String canonicalizePayload; // expected "jcs"
 
     @Override
     public void run() {
         try {
+            // Initialize crypto providers (e.g., BouncyCastle) as per project setup
             new InitBC();
 
             final String content = Files.readString(inFile, StandardCharsets.UTF_8).trim();
 
+            // === DSS / eIDAS path (uses eu.europa.esig.dss) =========================
+            // Converts Compact to minimal JSON, passes detached content if provided,
+            // and lets DSS perform policy-based validation (ETSI TS 119 102/182).
             if ("eidas".equalsIgnoreCase(mode)) {
                 verifyWithDss(content);
                 return;
             }
 
-            // --- CRYPTO-ONLY VERIFIKATION ---
-            // 1) Zerlegen: Compact oder JSON/BG?
+            // === Crypto-only path ====================================================
+            // 1) Parse Compact vs JSON/BG input into protected/payload/signature fields.
             String protectedB64;
-            String payloadB64 = null;     // kann leer sein (detached)
+            String payloadB64 = null; // may be empty/null (detached)
             String signatureB64;
 
             if (isJsonSerialization(content)) {
-                // JSON- oder BG-Serialization (single signature erwartet)
+                // JSON or BG wrapper: extract "protected" and "signature".
+                // Payload may be absent for detached signatures.
                 protectedB64 = extractJsonValue(content, "\"protected\"");
                 signatureB64 = extractJsonValue(content, "\"signature\"");
-                // payload kann fehlen (detached) – nur nutzen, wenn vorhanden
                 if (content.contains("\"payload\"")) {
                     payloadB64 = extractJsonValue(content, "\"payload\"");
                 }
             } else {
-                // Compact Serialization
-                String[] parts = content.split("\\.", -1); // -1: leere Teile behalten
+                // Compact Serialization (RFC 7515 §3.1): "protected.payload.signature"
+                String[] parts = content.split("\\.", -1); // keep empty parts
                 if (parts.length != 3) throw new IllegalArgumentException("Invalid compact JWS (expected 3 parts).");
                 protectedB64 = parts[0];
-                payloadB64   = parts[1]; // kann leer sein, wenn detached
+                payloadB64   = parts[1]; // may be empty for detached
                 signatureB64 = parts[2];
             }
 
-            // 2) Protected Header decodieren (für b64=false, alg=ph, etc.)
+            // 2) Decode Protected Header JSON to detect b64=false (RFC 7797) and resolve alg if needed.
             byte[] protectedJson = Base64.getUrlDecoder().decode(protectedB64);
             String protectedStr  = new String(protectedJson, StandardCharsets.UTF_8);
             boolean b64false = protectedStr.contains("\"b64\":false");
 
-            // 2a) Falls --alg=ph: Algorithmus aus Protected Header ermitteln
+            // If --alg=ph: read the header's alg (RFC 7515 §4)
             String resolvedAlg = alg;
             if ("ph".equalsIgnoreCase(alg)) {
                 String headerAlg = extractJsonValue(protectedStr, "\"alg\"");
@@ -103,54 +132,56 @@ public class VerifyCmd implements Runnable {
                 resolvedAlg = headerAlg;
             }
 
-            // 3) Signing-Input bilden (RFC 7515 / RFC 7797)
+            // 3) Build the JWS signing input (RFC 7515 §5.1/§7.2; RFC 7797):
+            //    b64=true  : ASCII( Base64URL(protected) + "." + Base64URL(payload) )
+            //    b64=false : ASCII( Base64URL(protected) + "." )  ||  RAW(payload)
             byte[] signingInput;
             if (b64false) {
                 if (payloadFile == null) {
-                    throw new IllegalArgumentException("b64=false erfordert --payload mit den ROH-Bytes der Nutzlast.");
+                    throw new IllegalArgumentException("b64=false requires --payload with RAW payload bytes.");
                 }
                 byte[] left = (protectedB64 + ".").getBytes(StandardCharsets.US_ASCII);
-                byte[] raw  = loadDetachedPayloadPossiblyCanonicalized(); // ggf. JCS
+                byte[] raw  = loadDetachedPayloadPossiblyCanonicalized(); // optional RFC 8785 JCS
                 signingInput = concat(left, raw);
             } else {
                 if (detached) {
-                    // Detached: payloadB64 aus Datei erzeugen (ggf. nach JCS)
+                    // For detached b64=true, reconstruct Base64URL(payload) from provided bytes.
                     if (payloadFile == null) {
-                        throw new IllegalArgumentException("detached erfordert --payload (für b64=true).");
+                        throw new IllegalArgumentException("detached requires --payload (for b64=true).");
                     }
-                    byte[] raw = loadDetachedPayloadPossiblyCanonicalized(); // ggf. JCS
+                    byte[] raw = loadDetachedPayloadPossiblyCanonicalized(); // optional RFC 8785 JCS
                     payloadB64 = Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
                 } else {
-                    // eingebettet -> payloadB64 muss vorhanden sein
                     if (payloadB64 == null) {
-                        throw new IllegalArgumentException("Eingebettete Signatur erwartet ein 'payload' im JWS.");
+                        throw new IllegalArgumentException("Embedded signature expects a 'payload' in the JWS.");
                     }
                 }
                 signingInput = (protectedB64 + "." + payloadB64).getBytes(StandardCharsets.US_ASCII);
             }
 
-            // 4) Signatur & Public Key laden
+            // 4) Decode signature bytes and obtain a PublicKey (PEM/XML/HEX or from certificate).
             byte[] sig = Base64.getUrlDecoder().decode(signatureB64);
 
             if (pubDir == null || pubFile == null) {
-                throw new IllegalArgumentException("crypto mode benötigt --pub-dir und --pub-file (Public Key oder Zertifikat).");
+                throw new IllegalArgumentException("crypto mode requires --pub-dir and --pub-file (public key or certificate).");
             }
 
             PublicKey pub;
             try {
-                // versucht PublicKey aus PEM/XML/HEX
+                // Try direct public key formats first (PEM/XML/HEX)
                 pub = PublicKeyFactory.load(pubDir, pubFile);
             } catch (Exception e) {
-                // Fallback: Public Key aus Zertifikat extrahieren
+                // Fallback: read certificate and extract public key
                 var cl = new PEMCertificateLoader(pubDir, pubFile);
                 cl.load();
                 if (cl.getCertificate() == null) {
-                    throw new IllegalArgumentException("Konnte keinen Public Key laden (weder Key noch Zertifikat).", e);
+                    throw new IllegalArgumentException("Could not load a public key (neither key nor certificate).", e);
                 }
                 pub = cl.getCertificate().getPublicKey();
             }
 
-            // 5) Kryptografisch verifizieren
+            // 5) Cryptographic verification (RFC 7515 §5.2; algorithms per RFC 7518).
+            //    For ECDSA, convert raw R||S (JWS form) -> DER (JCA expects DER).
             boolean ok = verifyJws(signingInput, sig, pub, resolvedAlg);
             System.out.println("VALID (crypto-only): " + ok);
 
@@ -160,20 +191,25 @@ public class VerifyCmd implements Runnable {
         }
     }
 
-    /* ====================== DSS/eIDAS-VERIFIKATION ====================== */
+    /* ====================== DSS / eIDAS verification ====================== */
 
+    /**
+     * Uses DSS to verify (JSON serialization expected). If a Compact JWS is given,
+     * we wrap it into a minimal JSON object. Detached payload (if provided) is passed
+     * to DSS as detached content. Configure DSS's CertificateVerifier to enable trust,
+     * revocation (OCSP/CRL), TSL, etc. (ETSI TS 119 102/182).
+     */
     private void verifyWithDss(String content) throws Exception {
         String jsonForDss = content;
 
-        // DSS erwartet JSON Serialization; Compact ggf. on-the-fly in JSON verpacken
+        // DSS expects JOSE JSON; convert Compact to minimal JSON (single signature)
         if (!isJsonSerialization(content)) {
             String[] parts = content.split("\\.", -1);
             if (parts.length != 3) throw new IllegalArgumentException("Invalid compact JWS for DSS.");
             String protectedB64 = parts[0];
-            String payloadB64   = parts[1];  // kann leer sein (detached)
+            String payloadB64   = parts[1];  // may be empty (detached)
             String signatureB64 = parts[2];
 
-            // Für DSS-JSON: Wenn detached, lassen wir "payload" weg; sonst einfügen
             if (payloadB64 == null || payloadB64.isEmpty()) {
                 jsonForDss = """
                 {
@@ -195,9 +231,10 @@ public class VerifyCmd implements Runnable {
         DSSDocument sigDoc = new InMemoryDocument(jsonForDss.getBytes(StandardCharsets.UTF_8),
                                                   "sig.jws", MimeTypeEnum.JOSE_JSON);
         SignedDocumentValidator validator = SignedDocumentValidator.fromDocument(sigDoc);
-        validator.setCertificateVerifier(new CommonCertificateVerifier()); // Basis; TSL/OCSP/CRL später konfigurieren
+        // Configure trust sources/revocation as needed for production
+        validator.setCertificateVerifier(new CommonCertificateVerifier());
 
-        // Detached-/b64=false-Handhabung: DSS kann mit detached Contents umgehen
+        // Pass detached content (DSS will bind it correctly)
         if (payloadFile != null) {
             byte[] raw = Files.readAllBytes(payloadFile);
             validator.setDetachedContents(List.of(new InMemoryDocument(raw)));
@@ -208,8 +245,15 @@ public class VerifyCmd implements Runnable {
         System.out.println(reports.getSimpleReport().toString());
     }
 
-    /* ====================== KRYPTOPFAD ====================== */
+    /* ====================== Crypto verify path ====================== */
 
+    /**
+     * Verifies a JWS signature with the given algorithm.
+     *
+     * - RS512: "SHA512withRSA" (RFC 7518 – RSASSA-PKCS1-v1_5 with SHA-512)
+     * - PS512: "RSASSA-PSS" with MGF1(SHA-512), saltLen=64 (RFC 7518 §3.5 – PS512 params)
+     * - ES*  : "SHAxxxwithECDSA"; JWS provides raw R||S, while JCA expects DER, so we transcode.
+     */
     private static boolean verifyJws(byte[] signingInput, byte[] sig, PublicKey pub, String alg) throws Exception {
         switch (alg) {
             case "RS512": {
@@ -240,7 +284,7 @@ public class VerifyCmd implements Runnable {
                 Signature v = Signature.getInstance(jca);
                 v.initVerify(pub);
                 v.update(signingInput);
-                // JWS liefert R||S (raw), viele Provider erwarten DER -> umwandeln:
+                // JWS provides fixed-length raw R||S; convert to DER for JCA verify.
                 byte[] der = EcdsaDer.transcodeConcatToDer(sig, ecdsaFieldSizeBytes(alg));
                 return v.verify(der);
             }
@@ -249,6 +293,7 @@ public class VerifyCmd implements Runnable {
         }
     }
 
+    /** ECDSA field sizes in bytes for raw R||S (RFC 7518): P-256=32, P-384=48, P-521≈66. */
     private static int ecdsaFieldSizeBytes(String alg) {
         return switch (alg) {
             case "ES256" -> 32;
@@ -258,15 +303,21 @@ public class VerifyCmd implements Runnable {
         };
     }
 
-    /* ====================== HILFSFUNKTIONEN ====================== */
+    /* ====================== Helpers ====================== */
 
+    /**
+     * Heuristic: JSON serialization (including BG wrapper) must contain both
+     * "protected" and "signature" fields. Compact lacks quotes and is dot-separated.
+     */
     private static boolean isJsonSerialization(String s) {
-        // Heuristik: JSON-Serialization (inkl. BG-Wrapper) enthält "protected" und "signature" Felder
         return s.contains("\"protected\"") && s.contains("\"signature\"");
     }
 
+    /**
+     * Minimal string extractor for JSON fields of the form:  "key":"value".
+     * Sufficient for our simple single-signature envelope parsing here.
+     */
     private static String extractJsonValue(String json, String keyWithQuotes) {
-        // Minimalparser für einfache Strings:  "key":"value"
         int i = json.indexOf(keyWithQuotes);
         if (i < 0) throw new IllegalArgumentException("Missing JSON field " + keyWithQuotes);
         int colon = json.indexOf(':', i);
@@ -276,6 +327,7 @@ public class VerifyCmd implements Runnable {
         return json.substring(q1 + 1, q2);
     }
 
+    /** Concatenate two byte arrays. */
     private static byte[] concat(byte[] a, byte[] b) {
         byte[] out = new byte[a.length + b.length];
         System.arraycopy(a, 0, out, 0, a.length);
@@ -283,21 +335,25 @@ public class VerifyCmd implements Runnable {
         return out;
     }
 
-    /** Lädt die externe Payload-Datei und kanonisiert sie optional (JCS), wenn --canonicalize-payload=jcs gesetzt wurde. */
+    /**
+     * Loads the external payload and optionally canonicalizes it via RFC 8785 (JCS),
+     * if `--canonicalize-payload=jcs` is set. Only valid JSON (object/array) can be canonicalized.
+     * Must mirror the signer’s canonicalization, otherwise verification will fail.
+     */
     private byte[] loadDetachedPayloadPossiblyCanonicalized() throws Exception {
         byte[] raw = Files.readAllBytes(payloadFile);
         boolean doCanonicalize = canonicalizePayload != null && canonicalizePayload.equalsIgnoreCase("jcs");
         if (!doCanonicalize) return raw;
 
-        // Nur JSON-Dateien sind kanonisierbar – sicherstellen
         String asText = new String(raw, StandardCharsets.UTF_8);
         if (!looksLikeJson(asText)) {
-            throw new IllegalArgumentException("--canonicalize-payload=jcs benötigt eine JSON-Payload-Datei (Object oder Array).");
+            throw new IllegalArgumentException("--canonicalize-payload=jcs requires a JSON payload file (object or array).");
         }
         String canonical = JsonCanonicalizerJcs.canonicalize(asText);
         return canonical.getBytes(StandardCharsets.UTF_8);
     }
 
+    /** Lightweight JSON check (object or array). */
     private static boolean looksLikeJson(String s) {
         int i = 0, n = s.length();
         while (i < n && Character.isWhitespace(s.charAt(i))) i++;

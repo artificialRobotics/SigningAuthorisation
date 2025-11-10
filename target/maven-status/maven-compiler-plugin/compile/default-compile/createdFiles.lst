@@ -1,11 +1,14 @@
 artificialrobotics\com\SigningAuthorisation\cli\App.class
 artificialrobotics\com\SigningAuthorisation\jose\ProtectedHeader.class
+artificialrobotics\com\SigningAuthorisation\examples\ExampleSignBerlinGroupRawPss$SigningInput.class
 artificialrobotics\com\SigningAuthorisation\json\RunVerifySignature.class
 artificialrobotics\com\SigningAuthorisation\cli\package-info.class
 artificialrobotics\com\SigningAuthorisation\certificates\PEMCertificateLoader.class
 artificialrobotics\com\SigningAuthorisation\signingKeys\RSAHexPrivateKeyLoader.class
 artificialrobotics\com\SigningAuthorisation\signingKeys\PrivateKeyFactory.class
 artificialrobotics\com\SigningAuthorisation\signingKeys\PrivateKeyLoader.class
+artificialrobotics\com\SigningAuthorisation\examples\ExampleSignBerlinGroupRawPss.class
+artificialrobotics\com\SigningAuthorisation\examples\package-info.class
 artificialrobotics\com\SigningAuthorisation\InitBC.class
 artificialrobotics\com\SigningAuthorisation\cli\EcdsaDer.class
 artificialrobotics\com\SigningAuthorisation\json\App.class
@@ -16,7 +19,9 @@ artificialrobotics\com\SigningAuthorisation\jose\package-info.class
 artificialrobotics\com\SigningAuthorisation\signingKeys\RSAHexPrivateKeyLoader$RSAPKCS1PrivateKeyLoader.class
 artificialrobotics\com\SigningAuthorisation\signingKeys\KeystorePrivateKeyLoader.class
 artificialrobotics\com\SigningAuthorisation\jose\ProtectedHeader$MiniJson.class
+artificialrobotics\com\SigningAuthorisation\examples\ExampleVerifyBerlinGroupRawPss$BG.class
 artificialrobotics\com\SigningAuthorisation\signingKeys\RSAHexPublicKeyLoader.class
+artificialrobotics\com\SigningAuthorisation\examples\ExampleVerifyBerlinGroupRawPss.class
 artificialrobotics\com\SigningAuthorisation\signingKeys\PublicKeyFactory.class
 artificialrobotics\com\SigningAuthorisation\jose\EcdsaDer.class
 artificialrobotics\com\SigningAuthorisation\cli\EcdsaConcatToDer.class

@@ -1,1 +1,3 @@
 artificialrobotics\com\SigningAuthorisation\JSON\AppTest.class
+artificialrobotics\com\SigningAuthorisation\JSON\ProtectedHeaderSmokeTest.class
+artificialrobotics\com\SigningAuthorisation\JSON\JsonCanonicalizationSmokeTest.class
