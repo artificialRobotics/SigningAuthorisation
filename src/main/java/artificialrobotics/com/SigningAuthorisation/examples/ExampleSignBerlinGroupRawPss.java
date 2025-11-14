@@ -38,7 +38,7 @@ import java.util.regex.Pattern;
  *   - RFC 8785 (JCS): JSON Canonicalization Scheme for payload stability
  *   - RFC 8017 (PKCS #1 v2.2): RSASSA-PSS encoding/verification
  *   - JCA/JCE: Java cryptographic provider and Signature API usage
- *   - ETSI TS 119 182 (JAdES) [context]: custom protected claims like sigT, etsiCanonicalization, crit
+ *   - ETSI TS 119 182 (JAdES) [context]: custom protected claims like sigT, canonAlg, crit
  */
 public class ExampleSignBerlinGroupRawPss {
 
@@ -143,7 +143,7 @@ public class ExampleSignBerlinGroupRawPss {
      * e) Orchestrate the detached JWS creation and return the Berlin Group wrapper JSON (pretty).
      *    The payload is not embedded (detached); the verifier must receive it separately.
      *
-     * Expected header claims (example): alg="PS512", sigT (resolved), sub, etsiCanonicalization, x5u, crit[…].
+     * Expected header claims (example): alg="PS512", sigT (resolved), sub, canonAlg, x5u, crit[…].
      *
      * @param protectedHeaderPrettyJson protected header in pretty JSON, with "sigT":"CURRENT"
      * @param payloadJson               business payload JSON; will be canonicalized via JCS
@@ -364,9 +364,9 @@ public class ExampleSignBerlinGroupRawPss {
                   "alg": "PS512",
                   "sigT": "CURRENT",
                   "sub": "myPaymentResourceId12345",
-                  "etsiCanonicalization": "http://json-canonicalization.org/algorithm",
+                  "canonAlg": "http://json-canonicalization.org/algorithm",
                   "x5u": "https://example.org/certs/meine_test_gmbh_cert.pem",
-                  "crit": ["etsiCanonicalization", "sigT", "sub"]
+                  "crit": ["canonAlg", "sigT", "sub"]
                 }
                 """;
 

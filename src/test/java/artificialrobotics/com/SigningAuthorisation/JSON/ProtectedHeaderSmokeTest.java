@@ -161,7 +161,7 @@ public class ProtectedHeaderSmokeTest {
             assertTrue("crit contains sub", crit.contains("sub"));
             assertTrue("crit contains x-extra", crit.contains("x-extra"));
 
-            // NOT automatically adding other fields (like etsiCanonicalization) – matches current implementation.
+            // NOT automatically adding other fields (like canonAlg) – matches current implementation.
 
             ok("applyOverridesJson");
             return 0;

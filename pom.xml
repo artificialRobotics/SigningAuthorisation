@@ -104,7 +104,7 @@
       <!-- BOM liefert 6.3; war bei dir 6.2 → angleichen -->
     </dependency>
 
-    <!-- BouncyCastle -->
+    <!-- BouncyCastle ... already part of DSS
     <dependency>
       <groupId>org.bouncycastle</groupId>
       <artifactId>bcprov-jdk18on</artifactId>
@@ -118,7 +118,7 @@
       <artifactId>bcmail-jdk18on</artifactId>
       <version>1.78.1</version>
     </dependency>
-
+-->
 
     <!-- Tests: konsistent JUnit 5 -->
     <dependency>

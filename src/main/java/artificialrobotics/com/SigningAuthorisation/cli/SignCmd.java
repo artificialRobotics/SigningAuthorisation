@@ -40,7 +40,7 @@ import java.util.Map;
  *  - **Unencoded payload** (`"b64": false`) per RFC 7797, including mandatory `"crit":["b64"]`,
  *  - Algorithms per RFC 7518: **RS512**, **PS512** (RSA-PSS), **ES256/ES384/ES512** (ECDSA),
  *  - Optional **JSON Canonicalization (JCS)** of the payload (RFC 8785) and advertising it via
- *    `"etsiCanonicalization"` in the protected header (commonly used in JAdES profiles; ETSI TS 119 182),
+ *    `"canonAlg"` in the protected header (commonly used in JAdES profiles; ETSI TS 119 182),
  *  - Private key sources: **files** (PKCS#8 / PKCS#1 / XML / HEX) or **keystores** (PKCS12 / JKS).
  *
  * Emitted artifacts (for audit and reproducibility):
@@ -185,8 +185,8 @@ public class SignCmd implements Runnable {
             // ETSI TS 119 182 contexts often use such header signaling.
             boolean signalCanonicalization = (canonicalizePayload != null && canonicalizePayload.equalsIgnoreCase("jcs"));
             if (signalCanonicalization) {
-                ph.put("etsiCanonicalization", "http://json-canonicalization.org/algorithm");
-                ensureCritContains(ph, "etsiCanonicalization");
+                ph.put("canonAlg", "http://json-canonicalization.org/algorithm");
+                ensureCritContains(ph, "canonAlg");
             }
 
             // Serialize protected header (RFC 7515 §5.1 Step 1) and Base64URL-encode it.
