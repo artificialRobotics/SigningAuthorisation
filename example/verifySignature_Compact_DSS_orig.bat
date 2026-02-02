@@ -1,1 +1,0 @@
-java -jar ../target/SigningAuthorisation-0.0.1-SNAPSHOT-all.jar verify --mode crypto --alg RS512 --in .\DSS_MyJSON-signed-jades-baseline-b-Compact.jws --pub-dir .\ --pub-file DSS_orig_Test_cert.pem --payload MyJSON.json --detached
