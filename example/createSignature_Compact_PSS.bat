@@ -1,1 +1,1 @@
-java -jar ../target/SigningAuthorisation-0.0.1-SNAPSHOT-all.jar sign --alg PS512 --payload MyJSON.json --key-dir .\ --key-file meine_test_gmbh_key.pem --out-format compact --out .\MyJSON_ps512_compact.jws --sigT CURRENT --sub aPaymentResID --cert-dir .\ --cert-file meine_test_gmbh_cert.pem
+java -jar ../target/SigningAuthorisation-0.0.1-SNAPSHOT-all.jar sign --alg PS512 --payload Payload.json --key-dir .\ --key-file ps512_key.pem --out-format compact --out .\result\ps512_compact.jws --sigT CURRENT --sub aPaymentResID --cert-dir .\ --cert-file ps512_cert.pem

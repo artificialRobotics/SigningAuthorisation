@@ -1,0 +1,1 @@
+java -jar ../target/SigningAuthorisation-0.0.1-SNAPSHOT-all.jar sign --alg ES512 --payload Payload.json --key-dir .\ --key-file es512_key_pkcs8.pem --out-format bg --out .\result\es512_bg_detached_canon.jws --sigT CURRENT --sub aPaymentResID --cert-dir .\ --cert-file es512_cert.pem --canonicalize-payload jcs --detached
