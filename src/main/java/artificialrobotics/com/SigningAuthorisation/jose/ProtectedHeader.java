@@ -21,9 +21,9 @@ public class ProtectedHeader {
         enforceCritForB64False();
     }
 
-    /* ========================= Externe API ========================= */
+    /* ========================= Public API ========================= */
 
-    /** Vollständige Kopie als Map<String,Object>. */
+    /** Full copy as Map<String,Object> (deep copied). */
     public Map<String, Object> asObjectMap() {
         LinkedHashMap<String, Object> copy = new LinkedHashMap<>();
         for (Map.Entry<String, Object> e : header.entrySet()) {
@@ -32,7 +32,7 @@ public class ProtectedHeader {
         return copy;
     }
 
-    /** String-Darstellung aller Werte. */
+    /** String representation of all values. */
     public Map<String, String> asStringMap() {
         LinkedHashMap<String, String> map = new LinkedHashMap<>();
         for (Map.Entry<String, Object> e : header.entrySet()) {
@@ -42,10 +42,14 @@ public class ProtectedHeader {
     }
 
     /**
-     * Setzt/überschreibt ein Feld.
-     * - "sigT": Wert "CURRENT" (case-insensitive) wird zur aktuellen UTC-Zeit (ISO 8601, Sekunde, 'Z').
-     * - "crit": wird additiv gemerged (Duplikate entfernt).
-     * - "sigT" oder "sub": werden automatisch in "crit" aufgenommen (JWS-konform).
+     * Set/override a header field.
+     *
+     * Special handling:
+     * - "sigT": value "CURRENT" (case-insensitive) becomes current UTC time (ISO 8601, seconds, 'Z').
+     * - "crit": merged additively (duplicates removed).
+     * - "sigT" and "sub": automatically added to "crit".
+     *
+     * Note: "b64" is enforced in "crit" if b64=false is set (RFC 7797).
      */
     public ProtectedHeader put(String key, Object value) {
         if (key == null) return this;
@@ -60,12 +64,8 @@ public class ProtectedHeader {
                 header.put("sub", deepCopy(value));
                 addCritical("sub");
             }
-            case "crit" -> {
-                mergeCrit(value);
-            }
-            default -> {
-                header.put(key, deepCopy(value));
-            }
+            case "crit" -> mergeCrit(value);
+            default -> header.put(key, deepCopy(value));
         }
 
         enforceCritForB64False();
@@ -73,10 +73,12 @@ public class ProtectedHeader {
     }
 
     /**
-     * Wendet Overrides aus JSON an.
-     * - "crit" wird additiv gemerged.
-     * - "sigT" = "CURRENT" → aktuelle UTC-Zeit.
-     * - Bei "sigT" und "sub" wird "crit" automatisch ergänzt.
+     * Apply overrides from JSON.
+     *
+     * Special handling:
+     * - "crit" is merged additively.
+     * - "sigT"="CURRENT" -> current UTC time.
+     * - "sigT" and "sub" automatically added to "crit".
      */
     public ProtectedHeader applyOverridesJson(String overridesJson) {
         if (overridesJson == null || overridesJson.isBlank()) return this;
@@ -107,35 +109,100 @@ public class ProtectedHeader {
         return this;
     }
 
-    /** Kompaktes JSON (eine Zeile). */
+    /**
+     * Optional FINAL allow-list filter for "crit".
+     *
+     * Intended use:
+     * - Some validators (e.g., DSS profiles) expect a restricted set of crit entries,
+     *   such as ["b64","sigT","sigD"] (if present).
+     *
+     * Semantics:
+     * - If allowList is null/empty: no changes (legacy behavior).
+     * - If "crit" does not exist: no changes.
+     * - Keeps only entries that are contained in allowList.
+     * - Additionally enforces "if present": only keeps an entry if the corresponding
+     *   claim exists in the header (special-case: "b64" only counts as present if b64=false).
+     * - Removes "crit" if it becomes empty.
+     *
+     * Note: After filtering, RFC 7797 compliance is still ensured:
+     *       if b64=false is set, "b64" will be (re-)added to crit by enforceCritForB64False().
+     *       Therefore, if you use b64=false and also want strict allow-listing, ensure "b64"
+     *       is included in allowList.
+     */
+    public ProtectedHeader applyCritAllowList(Collection<String> allowList) {
+        if (allowList == null || allowList.isEmpty()) return this;
+
+        Object c = header.get("crit");
+        if (c == null) return this;
+
+        // Normalize allow list
+        Set<String> allowed = new LinkedHashSet<>();
+        for (String s : allowList) {
+            if (s == null) continue;
+            String t = s.trim();
+            if (!t.isEmpty()) allowed.add(t);
+        }
+        if (allowed.isEmpty()) return this;
+
+        List<String> current = currentCritList();
+        List<String> filtered = new ArrayList<>();
+
+        for (String name : current) {
+            if (name == null) continue;
+            if (!allowed.contains(name)) continue;
+
+            // "if present" rule: only keep if claim exists in header
+            boolean present = header.containsKey(name);
+
+            // special-case b64: only meaningful/present if b64=false
+            if ("b64".equals(name)) {
+                present = Boolean.FALSE.equals(header.get("b64"));
+            }
+
+            if (!present) continue;
+
+            if (!filtered.contains(name)) filtered.add(name);
+        }
+
+        if (filtered.isEmpty()) {
+            header.remove("crit");
+        } else {
+            header.put("crit", filtered);
+        }
+
+        // Ensure RFC 7797: if b64=false, b64 must be in crit
+        enforceCritForB64False();
+        return this;
+    }
+
+    /** Compact JSON (single line). */
     public String toCompactJson() {
         return toJson(header, false, 0);
     }
 
-    /** Formatiertes JSON (eingerückt). */
+    /** Pretty JSON (indented). */
     public String toPrettyJson() {
         return toJson(header, true, 0);
     }
 
-    /** Base64URL(kompaktes JSON) ohne Padding. */
+    /** Base64URL(compact JSON) without padding. */
     public String toBase64Url() {
         return Base64.getUrlEncoder()
                 .withoutPadding()
                 .encodeToString(toCompactJson().getBytes(StandardCharsets.UTF_8));
     }
 
-    /* ========================= Internes ========================= */
+    /* ========================= Internal ========================= */
 
-    /** sigT-Normalisierung: "CURRENT" -> aktuelle UTC-Zeit (bis Sekunde, 'Z'). */
+    /** sigT normalization: "CURRENT" -> current UTC time (seconds, 'Z'). */
     private static Object normalizeSigT(Object v) {
         if (v instanceof String s && s.equalsIgnoreCase("CURRENT")) {
-            // ISO-8601, Sekundenauflösung, Z-Suffix
             return Instant.now().truncatedTo(ChronoUnit.SECONDS).toString();
         }
         return deepCopy(v);
     }
 
-    /** Fügt Namen zu crit hinzu (additiv, ohne Duplikate). */
+    /** Add names to "crit" (additive, no duplicates). */
     private void addCritical(String... names) {
         List<String> crit = currentCritList();
         for (String n : names) {
@@ -145,14 +212,14 @@ public class ProtectedHeader {
         header.put("crit", crit);
     }
 
-    /** Merged eingehenden crit-Wert (String/Array/List) additiv. */
+    /** Merge an incoming crit value (String/Array/List) additively. */
     private void mergeCrit(Object v) {
         List<String> crit = currentCritList();
         forEachStringish(v, s -> { if (!crit.contains(s)) crit.add(s); });
         header.put("crit", crit);
     }
 
-    /** Liefert aktuelle crit-Liste (nie null). */
+    /** Current crit list (never null). */
     private List<String> currentCritList() {
         List<String> crit = new ArrayList<>();
         Object c = header.get("crit");
@@ -173,7 +240,7 @@ public class ProtectedHeader {
         return crit;
     }
 
-    /** Erzwingt "b64" in crit, falls b64=false gesetzt ist. */
+    /** Enforce "b64" in crit if b64=false is set (RFC 7797). */
     private void enforceCritForB64False() {
         Object b64 = header.get("b64");
         if (Boolean.FALSE.equals(b64)) {
@@ -187,6 +254,7 @@ public class ProtectedHeader {
         if (value == null) return "null";
         if (value instanceof String s) return "\"" + jsonEscape(s) + "\"";
         if (value instanceof Number || value instanceof Boolean) return String.valueOf(value);
+
         if (value instanceof Map<?, ?> map) {
             StringBuilder sb = new StringBuilder();
             sb.append("{");
@@ -203,6 +271,7 @@ public class ProtectedHeader {
             sb.append("}");
             return sb.toString();
         }
+
         if (value instanceof List<?> list) {
             StringBuilder sb = new StringBuilder();
             sb.append("[");
@@ -215,10 +284,12 @@ public class ProtectedHeader {
             sb.append("]");
             return sb.toString();
         }
+
         if (value.getClass().isArray()) {
             Object[] arr = asObjectArray(value);
             return toJson(Arrays.asList(arr), pretty, indent);
         }
+
         return "\"" + jsonEscape(String.valueOf(value)) + "\"";
     }
 
@@ -234,9 +305,18 @@ public class ProtectedHeader {
     private static class MiniJson {
         private final String s; private int i=0;
         MiniJson(String s){ this.s=s; }
-        Object parse(){ skipWs(); Object v=parseValue(); skipWs(); if(i!=s.length()) throw new IllegalArgumentException("Extra chars"); return v; }
+
+        Object parse(){
+            skipWs();
+            Object v=parseValue();
+            skipWs();
+            if(i!=s.length()) throw new IllegalArgumentException("Extra chars");
+            return v;
+        }
+
         private Object parseValue(){
-            skipWs(); if(i>=s.length()) throw new IllegalArgumentException("Unexpected end");
+            skipWs();
+            if(i>=s.length()) throw new IllegalArgumentException("Unexpected end");
             char c=s.charAt(i);
             return switch(c){
                 case '{'->parseObject();
@@ -248,6 +328,7 @@ public class ProtectedHeader {
                 default->parseNumber();
             };
         }
+
         private Map<String,Object> parseObject(){
             expect('{'); skipWs();
             LinkedHashMap<String,Object> m=new LinkedHashMap<>();
@@ -260,6 +341,7 @@ public class ProtectedHeader {
             }
             return m;
         }
+
         private List<Object> parseArray(){
             expect('['); skipWs();
             List<Object> L=new ArrayList<>();
@@ -271,6 +353,7 @@ public class ProtectedHeader {
             }
             return L;
         }
+
         private String parseString(){
             expect('"'); StringBuilder sb=new StringBuilder();
             while(i<s.length()){
@@ -295,14 +378,21 @@ public class ProtectedHeader {
             }
             throw new IllegalArgumentException("Unterminated string");
         }
-        private Object parseLiteral(String name, Object val){ for(int j=0;j<name.length();j++) expect(name.charAt(j)); return val; }
+
+        private Object parseLiteral(String name, Object val){
+            for(int j=0;j<name.length();j++) expect(name.charAt(j));
+            return val;
+        }
+
         private Number parseNumber(){
-            int start=i; if(s.charAt(i)=='-') i++;
+            int start=i;
+            if(s.charAt(i)=='-') i++;
             while(i<s.length() && Character.isDigit(s.charAt(i))) i++;
             if(i<s.length() && s.charAt(i)=='.'){ i++; while(i<s.length()&&Character.isDigit(s.charAt(i))) i++; }
             String num=s.substring(start,i);
             return num.contains(".") ? Double.parseDouble(num) : Long.parseLong(num);
         }
+
         private void skipWs(){ while(i<s.length() && Character.isWhitespace(s.charAt(i))) i++; }
         private void expect(char c){ if(i>=s.length()||s.charAt(i)!=c) throw new IllegalArgumentException("Expected "+c); i++; }
         private boolean peek(char c){ return i<s.length() && s.charAt(i)==c; }
@@ -312,11 +402,13 @@ public class ProtectedHeader {
 
     private static Object deepCopy(Object v) {
         if (v == null || v instanceof String || v instanceof Number || v instanceof Boolean) return v;
+
         if (v instanceof List<?> L) {
             List<Object> out = new ArrayList<>(L.size());
             for (Object o : L) out.add(deepCopy(o));
             return out;
         }
+
         if (v instanceof Map<?, ?> M) {
             LinkedHashMap<String, Object> out = new LinkedHashMap<>();
             for (Map.Entry<?, ?> e : M.entrySet()) {
@@ -324,6 +416,7 @@ public class ProtectedHeader {
             }
             return out;
         }
+
         if (v.getClass().isArray()) return Arrays.asList(asObjectArray(v));
         return String.valueOf(v);
     }
@@ -336,7 +429,7 @@ public class ProtectedHeader {
         return out;
     }
 
-    /** Utility: iteriert Werte als Strings (String / Array / List). */
+    /** Utility: iterate values as strings (String / Array / List). */
     private static void forEachStringish(Object v, java.util.function.Consumer<String> c) {
         if (v == null) return;
         if (v instanceof List<?> L) {

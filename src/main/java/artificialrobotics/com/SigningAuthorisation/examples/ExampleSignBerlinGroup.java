@@ -427,7 +427,7 @@ public class ExampleSignBerlinGroup {
                   "sub": "myPaymentResourceId12345",
                   "canonAlg": "http://json-canonicalization.org/algorithm",
                   "x5u": "https://example.org/certs/meine_test_gmbh_cert.pem",
-                  "crit": ["canonAlg", "sigT", "sub"]
+                  "crit": ["sigT"]
                 }
                 """;
 

@@ -38,6 +38,7 @@ import java.util.Map;
  *  - Unencoded payload ("b64": false) per RFC 7797,
  *  - Algorithms: RS512, PS512, ES256/ES384/ES512 (RFC 7518),
  *  - Optional payload canonicalization via JCS (RFC 8785) signaled by "canonAlg",
+ *  - Optional final allow-list filtering for "crit" via --critClaimList,
  *  - Keys from file or keystore.
  *
  * IMPORTANT (project protocol alignment):
@@ -106,6 +107,19 @@ public class SignCmd implements Runnable {
     @CommandLine.Option(names="--canonicalize-payload", description="Canonicalize JSON payload before signing. Supported value: jcs")
     String canonicalizePayload;
 
+    /**
+     * Optional allow-list filter for "crit".
+     * Example: --critClaimList b64,sigT,sigD
+     *
+     * If set, "crit" is filtered to these values (and only if the corresponding claim is present).
+     */
+    @CommandLine.Option(
+            names="--critClaimList",
+            split=",",
+            description="Comma-separated allow-list for 'crit'. If provided, only these claims may appear under 'crit' (and only if present). Example: --critClaimList b64,sigT,sigD"
+    )
+    List<String> critClaimList;
+
     @CommandLine.Option(
             names="--out",
             required=true,
@@ -117,6 +131,7 @@ public class SignCmd implements Runnable {
         try {
             new InitBC();
 
+            // (0) Validate key source
             final boolean useKeystore = (keystorePath != null);
             if (useKeystore) {
                 if (keystorePassword == null)
@@ -128,13 +143,13 @@ public class SignCmd implements Runnable {
                     throw new IllegalArgumentException("Either provide --keystore ... OR --key-dir and --key-file.");
             }
 
-            // (1) Build Protected Header
+            // (1) Build Protected Header base
             Map<String, Object> base = new LinkedHashMap<>();
             base.put("alg", alg);
             if (x5u != null && !x5u.isBlank()) base.put("x5u", x5u);
             if (b64false) base.put("b64", false);
 
-            // x5c chain
+            // Add x5c chain (optional)
             if (certDir != null && certFile != null) {
                 CertificateLoader cl = new PEMCertificateLoader(certDir, certFile);
                 cl.load();
@@ -148,6 +163,7 @@ public class SignCmd implements Runnable {
 
             ProtectedHeader ph = new ProtectedHeader(base);
 
+            // Apply optional header overrides
             if (protectedHeaderFile != null) {
                 String overridesJson = Files.readString(protectedHeaderFile, StandardCharsets.UTF_8);
                 ph.applyOverridesJson(overridesJson);
@@ -155,26 +171,35 @@ public class SignCmd implements Runnable {
             if (subClaim != null) ph.put("sub", subClaim);
             if (sigTClaim != null) ph.put("sigT", sigTClaim);
 
+            // RFC 7797: ensure b64 in crit if b64=false
             if (b64false) ensureCritContains(ph, "b64");
 
+            // Optional payload canonicalization signaling (JCS / RFC 8785)
             boolean signalCanonicalization = (canonicalizePayload != null && canonicalizePayload.equalsIgnoreCase("jcs"));
             if (signalCanonicalization) {
                 ph.put("canonAlg", "http://json-canonicalization.org/algorithm");
                 ensureCritContains(ph, "canonAlg");
             }
 
+            // Optional final "crit" allow-list filter (e.g. for DSS restrictions)
+            if (critClaimList != null && !critClaimList.isEmpty()) {
+                ph.applyCritAllowList(critClaimList);
+            }
+
+            // Serialize protected header
             String protectedJsonCompact = ph.toCompactJson();
             String protectedJsonPretty  = ph.toPrettyJson();
             String protectedB64 = Base64.getUrlEncoder().withoutPadding()
                     .encodeToString(protectedJsonCompact.getBytes(StandardCharsets.UTF_8));
 
+            // Print final protected header (pretty)
             System.out.println("=== Protected Header (final, pretty) ===");
             System.out.println(protectedJsonPretty);
             System.out.println("=== Protected Header (final, Base64URL) ===");
             System.out.println(protectedB64);
             System.out.println("=========================================");
 
-            // (2) Load payload + optional JCS
+            // (2) Load payload + optional JCS canonicalization
             byte[] payloadOriginal = Files.readAllBytes(payloadFile);
             byte[] payloadEffective = payloadOriginal;
 
@@ -187,7 +212,7 @@ public class SignCmd implements Runnable {
                 payloadEffective = canonical.getBytes(StandardCharsets.UTF_8);
             }
 
-            // (3) Build signing input
+            // (3) Build JWS Signing Input
             byte[] signingInputBytes;
             String payloadB64 = null;
             boolean headerB64False = Boolean.FALSE.equals(ph.asObjectMap().get("b64"));
@@ -206,10 +231,12 @@ public class SignCmd implements Runnable {
             // (3b) Emit artifacts
             writePayloadTextAndHashArtifacts(payloadEffective, signingInputBytes, outFile, alg);
 
-            // (4) Load private key
+            // (4) Load private key (file or keystore)
             PrivateKey priv;
             if (useKeystore) {
-                Path ksDir = keystorePath.getParent();
+                // Robust parent handling: if user passes only "my.p12", getParent() is null.
+                Path ksDir = keystorePath.toAbsolutePath().getParent();
+                if (ksDir == null) ksDir = Path.of(".").toAbsolutePath();
                 String ksFile = keystorePath.getFileName().toString();
 
                 KeystorePrivateKeyLoader ksLoader = new KeystorePrivateKeyLoader(
@@ -227,7 +254,6 @@ public class SignCmd implements Runnable {
             }
 
             // (5) Compute signature
-            //     - For ES* we use PRE-HASH + NONEwithECDSA (DER signature) in this project protocol.
             byte[] signingInputDigest = computeSigningInputDigest(signingInputBytes, alg);
             byte[] sig = signJws(signingInputBytes, signingInputDigest, priv, alg);
             String sigB64 = Base64.getUrlEncoder().withoutPadding().encodeToString(sig);
@@ -303,7 +329,7 @@ public class SignCmd implements Runnable {
         String payloadText = dec.decode(java.nio.ByteBuffer.wrap(payloadEffective)).toString();
         Files.writeString(json4SigPath, payloadText, StandardCharsets.UTF_8);
 
-        // This artifact remains: Base64(digest(signingInputBytes))
+        // Base64(digest(signingInputBytes))
         String digestAlg = switch (alg) {
             case "ES256" -> "SHA-256";
             case "ES384" -> "SHA-384";
@@ -316,10 +342,6 @@ public class SignCmd implements Runnable {
         Files.writeString(hash4SigPath, digestB64 + System.lineSeparator(), StandardCharsets.UTF_8);
     }
 
-    /**
-     * Compute the digest over the JWS signing input bytes, according to the alg family (RFC 7518).
-     * Used for the ES* pre-hash protocol and also available for audit/debug.
-     */
     private static byte[] computeSigningInputDigest(byte[] signingInputBytes, String alg) throws Exception {
         String digestAlg = switch (alg) {
             case "ES256" -> "SHA-256";
@@ -334,8 +356,8 @@ public class SignCmd implements Runnable {
      * Signs the signing input (standard) OR, for the ES* pre-hash protocol, signs a precomputed digest.
      *
      * - RS512: standard JWS path (hashing inside algorithm)
-     * - PS512: unchanged standard path (RSASSA-PSS over signingInputBytes; hashing inside)
-     * - ES256/ES384/ES512: pre-hash protocol path
+     * - PS512: standard JWS path (RSASSA-PSS over signingInputBytes; hashing inside)
+     * - ES256/ES384/ES512: project protocol path
      *     signature = NONEwithECDSA over digest (DER signature bytes)
      */
     private static byte[] signJws(byte[] signingInputBytes,
@@ -350,7 +372,6 @@ public class SignCmd implements Runnable {
                 return s.sign();
             }
             case "PS512" -> {
-                // Keep as-is (standard): RSASSA-PSS over signingInputBytes (internal hashing)
                 Signature s = Signature.getInstance("RSASSA-PSS");
                 PSSParameterSpec pss = new PSSParameterSpec(
                         "SHA-512", "MGF1",
@@ -361,7 +382,6 @@ public class SignCmd implements Runnable {
                 return s.sign();
             }
             case "ES256", "ES384", "ES512" -> {
-                // Project protocol: pre-hash + NONEwithECDSA, return DER signature bytes
                 Signature s = Signature.getInstance("NONEwithECDSA", "BC");
                 s.initSign(key);
                 s.update(signingInputDigest);
