@@ -1,5 +1,6 @@
 package artificialrobotics.com.SigningAuthorisation.jose;
 
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -253,7 +254,12 @@ public class ProtectedHeader {
     private static String toJson(Object value, boolean pretty, int indent) {
         if (value == null) return "null";
         if (value instanceof String s) return "\"" + jsonEscape(s) + "\"";
-        if (value instanceof Number || value instanceof Boolean) return String.valueOf(value);
+        if (value instanceof Boolean b) return String.valueOf(b);
+
+        // IMPORTANT: stable number rendering (no trailing ".0", no scientific notation)
+        if (value instanceof Number n) {
+            return numberToJson(n);
+        }
 
         if (value instanceof Map<?, ?> map) {
             StringBuilder sb = new StringBuilder();
@@ -291,6 +297,31 @@ public class ProtectedHeader {
         }
 
         return "\"" + jsonEscape(String.valueOf(value)) + "\"";
+    }
+
+    /**
+     * Convert Number to JSON number string:
+     * - BigDecimal is rendered as plain string (no exponent)
+     * - trailing zeros removed (1712.0 -> 1712)
+     * - "-0" normalized to "0"
+     */
+    private static String numberToJson(Number n) {
+        BigDecimal bd;
+        if (n instanceof BigDecimal b) {
+            bd = b;
+        } else {
+            // Avoid Double/Float binary artifacts by using toString()
+            bd = new BigDecimal(n.toString());
+        }
+
+        bd = bd.stripTrailingZeros();
+        String s = bd.toPlainString();
+
+        // normalize "-0" -> "0"
+        if (s.startsWith("-0") && (s.length() == 2 || (s.length() > 2 && s.charAt(2) == '.'))) {
+            s = s.substring(1);
+        }
+        return s;
     }
 
     private static String jsonEscape(String s) {
@@ -384,13 +415,50 @@ public class ProtectedHeader {
             return val;
         }
 
+        /**
+         * Parse JSON number as BigDecimal (lossless for typical header use-cases).
+         * Supports optional fraction and exponent (e/E).
+         */
         private Number parseNumber(){
-            int start=i;
-            if(s.charAt(i)=='-') i++;
-            while(i<s.length() && Character.isDigit(s.charAt(i))) i++;
-            if(i<s.length() && s.charAt(i)=='.'){ i++; while(i<s.length()&&Character.isDigit(s.charAt(i))) i++; }
-            String num=s.substring(start,i);
-            return num.contains(".") ? Double.parseDouble(num) : Long.parseLong(num);
+            int start = i;
+
+            if (s.charAt(i) == '-') i++;
+
+            boolean hasIntDigits = false;
+            while (i < s.length() && Character.isDigit(s.charAt(i))) {
+                i++;
+                hasIntDigits = true;
+            }
+
+            if (i < s.length() && s.charAt(i) == '.') {
+                i++;
+                boolean hasFracDigits = false;
+                while (i < s.length() && Character.isDigit(s.charAt(i))) {
+                    i++;
+                    hasFracDigits = true;
+                }
+                if (!hasFracDigits) throw new IllegalArgumentException("Invalid number fraction");
+            }
+
+            if (i < s.length() && (s.charAt(i) == 'e' || s.charAt(i) == 'E')) {
+                i++;
+                if (i < s.length() && (s.charAt(i) == '+' || s.charAt(i) == '-')) i++;
+                boolean hasExpDigits = false;
+                while (i < s.length() && Character.isDigit(s.charAt(i))) {
+                    i++;
+                    hasExpDigits = true;
+                }
+                if (!hasExpDigits) throw new IllegalArgumentException("Invalid number exponent");
+            }
+
+            if (!hasIntDigits) throw new IllegalArgumentException("Invalid number");
+
+            String num = s.substring(start, i);
+            try {
+                return new BigDecimal(num);
+            } catch (NumberFormatException ex) {
+                throw new IllegalArgumentException("Bad number: " + num, ex);
+            }
         }
 
         private void skipWs(){ while(i<s.length() && Character.isWhitespace(s.charAt(i))) i++; }
@@ -425,7 +493,7 @@ public class ProtectedHeader {
         if (array instanceof Object[]) return (Object[]) array;
         int len = java.lang.reflect.Array.getLength(array);
         Object[] out = new Object[len];
-        for (int i = 0; i < len; i++) out[i] = java.lang.reflect.Array.get(array, i);
+        for (int j = 0; j < len; j++) out[j] = java.lang.reflect.Array.get(array, j);
         return out;
     }
 
