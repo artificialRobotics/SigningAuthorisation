@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ConstraintsParameters
+    xmlns="http://dss.esig.europa.eu/validation/policy"
+    Name="SigningAuthorisation JWS/JAdES Policy">
+
+    <Description>
+        Custom DSS validation policy for SigningAuthorisation.
+        Restricted to RS512, PS512 and ES512 level cryptography.
+    </Description>
+
+    <SignatureConstraints>
+        <StructuralValidation Level="FAIL"/>
+
+        <AcceptablePolicies Level="WARN">
+            <Id>ANY_POLICY</Id>
+            <Id>NO_POLICY</Id>
+        </AcceptablePolicies>
+
+        <PolicyAvailable Level="INFORM"/>
+        <PolicyHashMatch Level="WARN"/>
+
+        <AcceptableFormats Level="WARN">
+            <Id>*</Id>
+        </AcceptableFormats>
+
+        <BasicSignatureConstraints>
+            <ReferenceDataExistence Level="FAIL"/>
+            <ReferenceDataIntact Level="FAIL"/>
+            <SignatureIntact Level="FAIL"/>
+
+            <SigningCertificate>
+                <Recognition Level="FAIL"/>
+                <Signature Level="FAIL"/>
+                <NotExpired Level="FAIL"/>
+                <IssuerName Level="FAIL"/>
+                <NotRevoked Level="FAIL"/>
+                <NotOnHold Level="FAIL"/>
+                <NotSelfSigned Level="WARN"/>
+                <UsePseudonym Level="INFORM"/>
+                <Cryptographic/>
+            </SigningCertificate>
+
+            <CACertificate>
+                <Signature Level="FAIL"/>
+                <NotExpired Level="FAIL"/>
+                <IssuerName Level="FAIL"/>
+                <NotRevoked Level="FAIL"/>
+                <NotOnHold Level="FAIL"/>
+                <Cryptographic/>
+            </CACertificate>
+
+            <Cryptographic/>
+        </BasicSignatureConstraints>
+    </SignatureConstraints>
+
+    <Revocation>
+        <UnknownStatus Level="FAIL"/>
+        <ThisUpdatePresent Level="FAIL"/>
+        <RevocationIssuerKnown Level="FAIL"/>
+        <RevocationIssuerValidAtProductionTime Level="FAIL"/>
+        <RevocationAfterCertificateIssuance Level="FAIL"/>
+        <RevocationHasInformationAboutCertificate Level="FAIL"/>
+        <OCSPResponderIdMatch Level="FAIL"/>
+        <SelfIssuedOCSP Level="WARN"/>
+
+        <BasicSignatureConstraints>
+            <ReferenceDataExistence Level="FAIL"/>
+            <ReferenceDataIntact Level="FAIL"/>
+            <SignatureIntact Level="FAIL"/>
+
+            <SigningCertificate>
+                <Recognition Level="FAIL"/>
+                <Signature Level="FAIL"/>
+                <NotExpired Level="FAIL"/>
+                <NotRevoked Level="FAIL"/>
+                <NotOnHold Level="FAIL"/>
+                <NotSelfSigned Level="WARN"/>
+                <UsePseudonym Level="INFORM"/>
+                <Cryptographic/>
+            </SigningCertificate>
+
+            <CACertificate>
+                <Signature Level="FAIL"/>
+                <NotExpired Level="FAIL"/>
+                <NotRevoked Level="FAIL"/>
+                <NotOnHold Level="FAIL"/>
+                <Cryptographic/>
+            </CACertificate>
+
+            <Cryptographic/>
+        </BasicSignatureConstraints>
+    </Revocation>
+
+    <Cryptographic Level="FAIL">
+        <AcceptableEncryptionAlgo>
+            <Algo>RSA</Algo>
+            <Algo>RSASSA-PSS</Algo>
+            <Algo>ECDSA</Algo>
+            <Algo>PLAIN-ECDSA</Algo>
+        </AcceptableEncryptionAlgo>
+
+        <MiniPublicKeySize>
+            <Algo Size="2048">RSA</Algo>
+            <Algo Size="2048">RSASSA-PSS</Algo>
+            <Algo Size="521">ECDSA</Algo>
+            <Algo Size="521">PLAIN-ECDSA</Algo>
+        </MiniPublicKeySize>
+
+        <AcceptableDigestAlgo>
+            <Algo>SHA512</Algo>
+        </AcceptableDigestAlgo>
+    </Cryptographic>
+
+    <Model Value="SHELL"/>
+</ConstraintsParameters>

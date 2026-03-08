@@ -1,6 +1,5 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <modelVersion>4.0.0</modelVersion>
 
   <groupId>artificialrobotics.com.SigningAuthorisation.JSON</groupId>
@@ -10,13 +9,12 @@
   <url>http://maven.apache.org</url>
 
   <properties>
-    <maven.compiler.release>17</maven.compiler.release> <!-- <— setze hier 17 oder 21 -->
+    <maven.compiler.release>17</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <!-- reproduzierbare Artefakte (optional) -->
     <project.build.outputTimestamp>2024-01-01T00:00:00Z</project.build.outputTimestamp>
   </properties>
 
-  <!-- DSS BOM sauber importieren (optional, aber empfohlen) -->
+  <!-- DSS BOM -->
   <dependencyManagement>
     <dependencies>
       <dependency>
@@ -37,71 +35,32 @@
       <version>4.7.6</version>
     </dependency>
 
-    <!-- DSS – Versionen kommen aus der BOM, daher OHNE <version> -->
-    <dependency>
-      <groupId>eu.europa.ec.joinup.sd-dss</groupId>
-      <artifactId>dss-xades</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>eu.europa.ec.joinup.sd-dss</groupId>
-      <artifactId>dss-validation</artifactId>
-    </dependency>
+    <!-- DSS: minimal, focused set for JAdES/JWS validation -->
     <dependency>
       <groupId>eu.europa.ec.joinup.sd-dss</groupId>
       <artifactId>dss-jades</artifactId>
     </dependency>
+
+    <dependency>
+      <groupId>eu.europa.ec.joinup.sd-dss</groupId>
+      <artifactId>dss-validation</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>eu.europa.ec.joinup.sd-dss</groupId>
+      <artifactId>dss-policy-jaxb</artifactId>
+    </dependency>
+
     <dependency>
       <groupId>eu.europa.ec.joinup.sd-dss</groupId>
       <artifactId>dss-utils-apache-commons</artifactId>
     </dependency>
+
+    <!-- Logging (SLF4J provider) -->
     <dependency>
-      <groupId>eu.europa.ec.joinup.sd-dss</groupId>
-      <artifactId>dss-utils</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>eu.europa.ec.joinup.sd-dss</groupId>
-      <artifactId>specs-jades</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>eu.europa.ec.joinup.sd-dss</groupId>
-      <artifactId>specs-jws</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>eu.europa.ec.joinup.sd-dss</groupId>
-      <artifactId>dss-service</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>eu.europa.ec.joinup.sd-dss</groupId>
-      <artifactId>dss-tsl-validation</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>eu.europa.ec.joinup.sd-dss</groupId>
-      <artifactId>dss-token</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>eu.europa.ec.joinup.sd-dss</groupId>
-      <artifactId>dss-model</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>eu.europa.ec.joinup.sd-dss</groupId>
-      <artifactId>dss-crl-parser</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>eu.europa.ec.joinup.sd-dss</groupId>
-      <artifactId>dss-crl-parser-stream</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>eu.europa.ec.joinup.sd-dss</groupId>
-      <artifactId>dss-crl-parser-x509crl</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>eu.europa.ec.joinup.sd-dss</groupId>
-      <artifactId>dss-spi</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>eu.europa.ec.joinup.sd-dss</groupId>
-      <artifactId>specs-trusted-list</artifactId>
-      <!-- BOM liefert 6.3; war bei dir 6.2 → angleichen -->
+      <groupId>ch.qos.logback</groupId>
+      <artifactId>logback-classic</artifactId>
+      <version>1.5.16</version>
     </dependency>
 
     <!-- BouncyCastle ... already part of DSS
@@ -118,9 +77,9 @@
       <artifactId>bcmail-jdk18on</artifactId>
       <version>1.78.1</version>
     </dependency>
--->
+    -->
 
-    <!-- Tests: konsistent JUnit 5 -->
+    <!-- Tests -->
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
@@ -140,7 +99,7 @@
         </configuration>
       </plugin>
 
-      <!-- Tests (JUnit 5) -->
+      <!-- Tests -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
@@ -158,16 +117,16 @@
         <executions>
           <execution>
             <phase>package</phase>
-            <goals><goal>shade</goal></goals>
+            <goals>
+              <goal>shade</goal>
+            </goals>
             <configuration>
               <createDependencyReducedPom>true</createDependencyReducedPom>
               <finalName>${project.artifactId}-${project.version}-all</finalName>
               <transformers>
-                <!-- Manifest: Main-Class eintragen -->
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                   <mainClass>artificialrobotics.com.SigningAuthorisation.cli.App</mainClass>
                 </transformer>
-                <!-- Services zusammenführen (wichtig bei DSS/BC) -->
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
               </transformers>
               <filters>
@@ -194,7 +153,9 @@
           <execution>
             <id>dist-zip</id>
             <phase>package</phase>
-            <goals><goal>single</goal></goals>
+            <goals>
+              <goal>single</goal>
+            </goals>
             <configuration>
               <finalName>${project.artifactId}-${project.version}</finalName>
               <appendAssemblyId>false</appendAssemblyId>
@@ -208,4 +169,3 @@
     </plugins>
   </build>
 </project>
-
