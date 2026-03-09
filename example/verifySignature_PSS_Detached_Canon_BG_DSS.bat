@@ -10,9 +10,15 @@ REM --validationPolicy <xml-file>
 @echo ## with the parameter --alg ph  the signature alg defined in protected header is used automatically
 
 @echo --> with canonicalize-payload as payload
-REM java -jar ../target/SigningAuthorisation-0.0.1-SNAPSHOT-all.jar verify --mode eidas --alg ph --in .\result\PS512_bg_detached_canon.jws --pub-dir .\ --pub-file ps512_cert.pem --payload .\result\JSON4Signatureps512_bg_detached_canon.jws.json --truststore DSS_TrustStore.p12 --truststoreType PKCS12 --truststorePassword password --validationPolicy .\custom-validation-policy.xml  --detached
+REM java -jar ../target/SigningAuthorisation-0.0.1-SNAPSHOT-all.jar verify --mode crypto --alg ph --in .\result\PS512_bg_detached_canon.jws --pub-dir .\ --pub-file ps512_cert.pem --payload .\result\JSON4Signatureps512_bg_detached_canon.jws.json --truststore DSS_TrustStore.p12 --truststoreType PKCS12 --truststorePassword password --validationPolicy .\custom-validation-policy.xml  --detached
 
 @echo --> with original payload as payload
-REM java -jar ../target/SigningAuthorisation-0.0.1-SNAPSHOT-all.jar verify --mode eidas --alg ph --in .\result\PS512_bg_detached_canon.jws --pub-dir .\ --pub-file ps512_cert.pem --payload Payload.json --canonicalize-payload jcs --truststore DSS_TrustStore.p12 --truststoreType PKCS12 --truststorePassword password --validationPolicy .\custom-validation-policy.xml --detached
+@echo JSON payload crypto
+REM java -jar ../target/SigningAuthorisation-0.0.1-SNAPSHOT-all.jar verify --mode crypto --alg ph --in .\result\PS512_bg_detached_canon.jws --pub-dir .\ --pub-file ps512_cert.pem --payload Payload.json --canonicalize-payload jcs --truststore DSS_TrustStore.p12 --truststoreType PKCS12 --truststorePassword password --validationPolicy .\custom-validation-policy.xml --detached
 
-java -jar ../target/SigningAuthorisation-0.0.1-SNAPSHOT-all.jar verify --mode eidas --alg ph --in .\result\PS512_bg_detached_canon.jws --pub-dir .\ --pub-file ps512_cert.pem --payload Payload.json --canonicalize-payload jcs --truststore DSS_TrustStore.p12 --truststoreType PKCS12 --truststorePassword password --validationPolicy .\default-constraint-WebAPP.xml --detached
+
+@echo JSON payload eidas
+REM java -jar ../target/SigningAuthorisation-0.0.1-SNAPSHOT-all.jar verify --mode eidas --alg ph --in .\result\PS512_bg_detached_canon.jws --pub-dir .\ --pub-file ps512_cert.pem --payload .\result\JSON4Signatureps512_bg_detached_canon.jws.json --truststore DSS_TrustStore.p12 --truststoreType PKCS12 --truststorePassword password --validationPolicy .\default-constraint-WebAPP.xml --detached
+
+@echo Hash payload crypto
+java -jar ../target/SigningAuthorisation-0.0.1-SNAPSHOT-all.jar verify --mode crypto --alg ph --in .\result\PS512_bg_detached_canon.jws --pub-dir .\ --pub-file ps512_cert.pem --payloadHashFile .\result\HASH4SignaturePS512_bg_detached_canon.jws.txt --truststore DSS_TrustStore.p12 --truststoreType PKCS12 --truststorePassword password --validationPolicy .\default-constraint-WebAPP.xml --detached
