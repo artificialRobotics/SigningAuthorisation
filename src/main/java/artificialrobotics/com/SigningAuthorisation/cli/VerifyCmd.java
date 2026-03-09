@@ -32,6 +32,8 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Enumeration;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * # VerifyCmd
@@ -62,12 +64,13 @@ import java.util.List;
  *  - This verifier supports both forms in crypto mode
  *
  * DSS / eIDAS profile note:
- *  - In this project, the DSS path is used to reproduce the existing hash-only verification profile.
- *  - This means: detached content supplied via --payload is treated as the payload representation
- *    to be verified by DSS, which in the ES* project flow is the hash payload, not a large original
- *    business payload.
  *  - BG wrapper JSON is transformed to plain JOSE JSON before handing it to DSS.
  *  - In DSS mode, --pub-dir / --pub-file are ignored. Trust is established via truststore.
+ *
+ * Reporting note:
+ *  - DSS overall validity is determined via SimpleReport.isValid(signatureId)
+ *  - Additional CRYPTO / CERT-TRUST / PROFILE statuses are derived from Detailed Report
+ *    indication/subIndication values where possible.
  */
 @CommandLine.Command(name = "verify", description = "Verify JWS/JAdES (crypto-only or eIDAS/DSS).")
 public class VerifyCmd implements Runnable {
@@ -81,24 +84,21 @@ public class VerifyCmd implements Runnable {
     @CommandLine.Option(names = "--in", required = true, description = "JWS input file (compact OR JSON serialization; BG wrapper supported).")
     Path inFile;
 
-    // crypto mode
     @CommandLine.Option(names = "--pub-dir", description = "Directory of public key / certificate")
     Path pubDir;
 
     @CommandLine.Option(names = "--pub-file", description = "File name of public key / certificate")
     String pubFile;
 
-    // detached payload / RFC 7797
     @CommandLine.Option(names = "--detached", description = "Treat input as detached JWS. Provide --payload for verification.")
     boolean detached;
 
-    @CommandLine.Option(names = "--payload", description = "Detached payload file (raw bytes). In DSS mode this is the detached hash-payload representation used by the project profile.")
+    @CommandLine.Option(names = "--payload", description = "Detached payload file (raw bytes).")
     Path payloadFile;
 
     @CommandLine.Option(names = "--canonicalize-payload", description = "Apply canonicalization to detached payload before verification. Supported value: jcs")
     String canonicalizePayload;
 
-    // DSS / eIDAS mode
     @CommandLine.Option(names = "--truststore", description = "Truststore file for DSS verification (PKCS12/JKS).")
     Path truststorePath;
 
@@ -122,8 +122,6 @@ public class VerifyCmd implements Runnable {
                 verifyWithDss(content);
                 return;
             }
-
-            /* ====================== CRYPTO MODE ====================== */
 
             String protectedB64;
             String payloadB64 = null;
@@ -209,23 +207,6 @@ public class VerifyCmd implements Runnable {
         }
     }
 
-    /* ====================== DSS / eIDAS verification ====================== */
-
-    /**
-     * Performs DSS/eIDAS validation for the project-specific detached hash profile.
-     *
-     * Responsibilities:
-     * - transforms BG or compact JWS into JOSE JSON for DSS
-     * - loads trust anchors from provided truststore
-     * - configures DSS validator
-     * - loads detached payload representation from --payload
-     * - applies custom validation policy or DSS default policy
-     * - prints a clear final result
-     *
-     * Important project behavior:
-     * - detached content supplied via --payload is used as the payload representation
-     *   that DSS validates against. In this project this can be the hash-payload representation.
-     */
     private void verifyWithDss(String content) throws Exception {
         if (truststorePath == null) {
             throw new IllegalArgumentException("--truststore is required for --mode eidas.");
@@ -245,8 +226,6 @@ public class VerifyCmd implements Runnable {
                 "sig.jws",
                 MimeTypeEnum.JOSE_JSON
         );
-
-        /* ---------- TRUSTSTORE -> TRUSTED CERT SOURCE ---------- */
 
         KeyStore trustStore = KeyStore.getInstance(truststoreType);
         try (InputStream is = Files.newInputStream(truststorePath)) {
@@ -273,12 +252,10 @@ public class VerifyCmd implements Runnable {
         if (payloadFile != null) {
             byte[] raw = loadDetachedPayloadPossiblyCanonicalized();
             validator.setDetachedContents(List.of(new InMemoryDocument(raw)));
-            System.out.println("INFO: DSS detached content loaded from --payload. In this project profile this represents the hash-payload input.");
+            System.out.println("INFO: DSS detached content loaded from --payload.");
         } else {
             System.out.println("INFO: No detached payload provided to DSS.");
         }
-
-        /* ---------- EXECUTE DSS VALIDATION ---------- */
 
         Reports reports;
         if (validationPolicyFile != null) {
@@ -297,18 +274,310 @@ public class VerifyCmd implements Runnable {
         System.out.println("Detailed report object available: " + (reports.getDetailedReport() != null));
         System.out.println("Diagnostic data available: " + (reports.getDiagnosticData() != null));
 
+        printDssResultSummary(reports);
+
         boolean overallValid = isDssValidationSuccessful(reports);
         System.out.println(overallValid ? "FINAL RESULT: JWS IS VALID" : "FINAL RESULT: JWS IS NOT VALID");
     }
 
-    /**
-     * Converts supported input variants into JOSE JSON expected by DSS.
-     *
-     * Supported source formats:
-     * - Berlin Group wrapper JSON
-     * - plain JOSE JSON serialization
-     * - compact JWS serialization
-     */
+    private static void printDssResultSummary(Reports reports) {
+        List<String> ids = extractSignatureIdsFromSimpleReport(reports);
+        if (ids.isEmpty()) {
+            System.out.println("DSS OVERALL : NOT OK (no signatures found)");
+            System.out.println("DSS CRYPTO  : UNKNOWN");
+            System.out.println("DSS CERT    : UNKNOWN");
+            System.out.println("DSS PROFILE : UNKNOWN");
+            return;
+        }
+
+        String detailedXml = safeToString(reports != null ? reports.getDetailedReport() : null);
+
+        boolean overallAllOk = true;
+        TriState cryptoAll = TriState.TRUE;
+        TriState certAll = TriState.TRUE;
+        TriState profileAll = TriState.TRUE;
+
+        Object simpleReport = reports.getSimpleReport();
+
+        for (String id : ids) {
+            boolean overall = invokeBooleanMethod(simpleReport, "isValid", id, false);
+
+            DssIndicationInfo info = extractDetailedIndicationInfo(detailedXml, id);
+
+            TriState crypto = classifyCrypto(info);
+            TriState cert = classifyCert(info);
+            TriState profile = classifyProfile(info);
+
+            overallAllOk &= overall;
+            cryptoAll = mergeTriStateAnd(cryptoAll, crypto);
+            certAll = mergeTriStateAnd(certAll, cert);
+            profileAll = mergeTriStateAnd(profileAll, profile);
+
+            String indication = info.indication;
+            String subIndication = info.subIndication;
+
+            if (indication == null) {
+                indication = invokeStringMethod(simpleReport, "getIndication", id);
+            }
+            if (subIndication == null) {
+                subIndication = invokeStringMethod(simpleReport, "getSubIndication", id);
+            }
+
+            System.out.println("DSS SIGNATURE ID: " + id);
+            System.out.println("  OVERALL : " + (overall ? "OK" : "NOT OK"));
+            System.out.println("  CRYPTO  : " + triStateToText(crypto));
+            System.out.println("  CERT    : " + triStateToText(cert));
+            System.out.println("  PROFILE : " + triStateToText(profile));
+            if (indication != null) {
+                System.out.println("  INDICATION     : " + indication);
+            }
+            if (subIndication != null) {
+                System.out.println("  SUB-INDICATION : " + subIndication);
+            }
+        }
+
+        System.out.println("DSS OVERALL : " + (overallAllOk ? "OK" : "NOT OK"));
+        System.out.println("DSS CRYPTO  : " + triStateToText(cryptoAll));
+        System.out.println("DSS CERT    : " + triStateToText(certAll));
+        System.out.println("DSS PROFILE : " + triStateToText(profileAll));
+    }
+
+    private enum TriState {
+        TRUE, FALSE, UNKNOWN
+    }
+
+    private static final class DssIndicationInfo {
+        final String indication;
+        final String subIndication;
+
+        DssIndicationInfo(String indication, String subIndication) {
+            this.indication = indication;
+            this.subIndication = subIndication;
+        }
+    }
+
+    private static TriState classifyCrypto(DssIndicationInfo info) {
+        if (info == null) return TriState.UNKNOWN;
+        String ind = upper(info.indication);
+        String sub = upper(info.subIndication);
+
+        if ("TOTAL_PASSED".equals(ind) || "PASSED".equals(ind)) {
+            return TriState.TRUE;
+        }
+
+        if (containsAny(sub,
+                "HASH_FAILURE",
+                "SIG_CRYPTO_FAILURE",
+                "CRYPTO_CONSTRAINTS_FAILURE",
+                "SIG_CONSTRAINTS_FAILURE",
+                "FORMAT_FAILURE",
+                "SIGNED_DATA_NOT_FOUND")) {
+            return TriState.FALSE;
+        }
+
+        if ("FAILED".equals(ind) && containsAny(sub,
+                "SIG_CRYPTO_FAILURE",
+                "HASH_FAILURE",
+                "CRYPTO_CONSTRAINTS_FAILURE",
+                "SIG_CONSTRAINTS_FAILURE")) {
+            return TriState.FALSE;
+        }
+
+        return TriState.UNKNOWN;
+    }
+
+    private static TriState classifyCert(DssIndicationInfo info) {
+        if (info == null) return TriState.UNKNOWN;
+        String ind = upper(info.indication);
+        String sub = upper(info.subIndication);
+
+        if ("TOTAL_PASSED".equals(ind) || "PASSED".equals(ind)) {
+            return TriState.TRUE;
+        }
+
+        if (containsAny(sub,
+                "NO_CERTIFICATE_CHAIN_FOUND",
+                "CERTIFICATE_CHAIN_GENERAL_FAILURE",
+                "REVOKED",
+                "EXPIRED",
+                "NOT_YET_VALID",
+                "OUT_OF_BOUNDS_NO_POE",
+                "OUT_OF_BOUNDS_NOT_REVOKED",
+                "TRY_LATER",
+                "REVOCATION_OUT_OF_BOUNDS_NO_POE",
+                "REVOCATION_OUT_OF_BOUNDS_NOT_REVOKED",
+                "CHAIN_CONSTRAINTS_FAILURE")) {
+            return TriState.FALSE;
+        }
+
+        if ("INDETERMINATE".equals(ind) && containsAny(sub,
+                "TRY_LATER",
+                "NO_CERTIFICATE_CHAIN_FOUND",
+                "OUT_OF_BOUNDS_NO_POE",
+                "OUT_OF_BOUNDS_NOT_REVOKED")) {
+            return TriState.FALSE;
+        }
+
+        return TriState.UNKNOWN;
+    }
+
+    private static TriState classifyProfile(DssIndicationInfo info) {
+        if (info == null) return TriState.UNKNOWN;
+        String ind = upper(info.indication);
+        String sub = upper(info.subIndication);
+
+        if ("TOTAL_PASSED".equals(ind) || "PASSED".equals(ind)) {
+            return TriState.TRUE;
+        }
+
+        if (containsAny(sub,
+                "FORMAT_FAILURE",
+                "SIG_CONSTRAINTS_FAILURE",
+                "CHAIN_CONSTRAINTS_FAILURE",
+                "CRYPTO_CONSTRAINTS_FAILURE",
+                "NO_SIGNING_CERTIFICATE_FOUND")) {
+            return TriState.FALSE;
+        }
+
+        if ("FAILED".equals(ind) && containsAny(sub,
+                "FORMAT_FAILURE",
+                "SIG_CONSTRAINTS_FAILURE",
+                "CHAIN_CONSTRAINTS_FAILURE")) {
+            return TriState.FALSE;
+        }
+
+        return TriState.UNKNOWN;
+    }
+
+    private static TriState mergeTriStateAnd(TriState a, TriState b) {
+        if (a == TriState.FALSE || b == TriState.FALSE) {
+            return TriState.FALSE;
+        }
+        if (a == TriState.UNKNOWN || b == TriState.UNKNOWN) {
+            return TriState.UNKNOWN;
+        }
+        return TriState.TRUE;
+    }
+
+    private static String triStateToText(TriState t) {
+        return switch (t) {
+            case TRUE -> "OK";
+            case FALSE -> "NOT OK";
+            case UNKNOWN -> "UNKNOWN";
+        };
+    }
+
+    private static String safeToString(Object o) {
+        return o == null ? null : String.valueOf(o);
+    }
+
+    private static String upper(String s) {
+        return s == null ? null : s.toUpperCase();
+    }
+
+    private static boolean containsAny(String s, String... needles) {
+        if (s == null) return false;
+        for (String n : needles) {
+            if (s.contains(n)) return true;
+        }
+        return false;
+    }
+
+    private static DssIndicationInfo extractDetailedIndicationInfo(String xml, String signatureId) {
+        if (xml == null || signatureId == null || signatureId.isBlank()) {
+            return new DssIndicationInfo(null, null);
+        }
+
+        String quotedId = Pattern.quote(signatureId);
+
+        String indication = firstGroup(xml,
+                "(?s)<Signature\\b[^>]*Id\\s*=\\s*\"" + quotedId + "\"[^>]*>.*?<Indication>(.*?)</Indication>",
+                "(?s)<Signature\\b[^>]*Id\\s*=\\s*\"" + quotedId + "\"[^>]*>.*?<Conclusion>.*?<Indication>(.*?)</Indication>",
+                "(?s)<Signature\\b[^>]*Id\\s*=\\s*\"" + quotedId + "\"[^>]*>.*?<ValidationConclusion>.*?<Indication>(.*?)</Indication>"
+        );
+
+        String subIndication = firstGroup(xml,
+                "(?s)<Signature\\b[^>]*Id\\s*=\\s*\"" + quotedId + "\"[^>]*>.*?<SubIndication>(.*?)</SubIndication>",
+                "(?s)<Signature\\b[^>]*Id\\s*=\\s*\"" + quotedId + "\"[^>]*>.*?<Conclusion>.*?<SubIndication>(.*?)</SubIndication>",
+                "(?s)<Signature\\b[^>]*Id\\s*=\\s*\"" + quotedId + "\"[^>]*>.*?<ValidationConclusion>.*?<SubIndication>(.*?)</SubIndication>"
+        );
+
+        return new DssIndicationInfo(indication, subIndication);
+    }
+
+    private static String firstGroup(String input, String... regexes) {
+        if (input == null) return null;
+        for (String regex : regexes) {
+            Matcher m = Pattern.compile(regex).matcher(input);
+            if (m.find()) {
+                return m.group(1);
+            }
+        }
+        return null;
+    }
+
+    private static boolean invokeBooleanMethod(Object target, String methodName, String signatureId, boolean fallback) {
+        if (target == null) {
+            return fallback;
+        }
+        try {
+            Method m = target.getClass().getMethod(methodName, String.class);
+            Object result = m.invoke(target, signatureId);
+            return (result instanceof Boolean b) ? b : fallback;
+        } catch (Exception e) {
+            return fallback;
+        }
+    }
+
+    private static String invokeStringMethod(Object target, String methodName, String signatureId) {
+        if (target == null) {
+            return null;
+        }
+        try {
+            Method m = target.getClass().getMethod(methodName, String.class);
+            Object result = m.invoke(target, signatureId);
+            return result != null ? String.valueOf(result) : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static List<String> extractSignatureIdsFromSimpleReport(Reports reports) {
+        List<String> ids = new ArrayList<>();
+        if (reports == null || reports.getSimpleReport() == null) {
+            return ids;
+        }
+
+        Object simpleReport = reports.getSimpleReport();
+
+        try {
+            Method getSignatureIdList = simpleReport.getClass().getMethod("getSignatureIdList");
+            Object idsObj = getSignatureIdList.invoke(simpleReport);
+            if (idsObj instanceof Iterable<?> iterable) {
+                for (Object o : iterable) {
+                    if (o != null) {
+                        ids.add(String.valueOf(o));
+                    }
+                }
+            }
+            if (!ids.isEmpty()) {
+                return ids;
+            }
+        } catch (Exception ignored) {
+        }
+
+        try {
+            Method getFirstSignatureId = simpleReport.getClass().getMethod("getFirstSignatureId");
+            Object firstId = getFirstSignatureId.invoke(simpleReport);
+            if (firstId != null) {
+                ids.add(String.valueOf(firstId));
+            }
+        } catch (Exception ignored) {
+        }
+
+        return ids;
+    }
+
     private static String toJoseJsonForDss(String content) {
         if (isBerlinGroupSerialization(content)) {
             String protectedB64 = extractJsonValue(content, "\"protected\"");
@@ -353,84 +622,21 @@ public class VerifyCmd implements Runnable {
         }
     }
 
-    /**
-     * Tries to determine an overall DSS validation result.
-     *
-     * This method intentionally avoids compile-time dependency on version-specific DSS SimpleReport APIs.
-     * It uses reflection to look for typical methods such as:
-     * - getSignatureIdList()
-     * - isValid(String)
-     * - getFirstSignatureId()
-     *
-     * Behavior:
-     * - if no signatures are found => false
-     * - if any signature is invalid => false
-     * - if all detected signatures are valid => true
-     * - otherwise conservative fallback => false
-     */
     private static boolean isDssValidationSuccessful(Reports reports) {
-        if (reports == null || reports.getSimpleReport() == null) {
+        List<String> ids = extractSignatureIdsFromSimpleReport(reports);
+        if (ids.isEmpty()) {
             return false;
         }
 
         Object simpleReport = reports.getSimpleReport();
-
-        try {
-            Method getSignatureIdList = simpleReport.getClass().getMethod("getSignatureIdList");
-            Object idsObj = getSignatureIdList.invoke(simpleReport);
-
-            List<String> ids = new ArrayList<>();
-            if (idsObj instanceof Iterable<?> iterable) {
-                for (Object o : iterable) {
-                    if (o != null) {
-                        ids.add(String.valueOf(o));
-                    }
-                }
-            }
-
-            if (ids.isEmpty()) {
-                return false;
-            }
-
-            Method isValid = simpleReport.getClass().getMethod("isValid", String.class);
-            for (String id : ids) {
-                Object validObj = isValid.invoke(simpleReport, id);
-                if (!(validObj instanceof Boolean b) || !b) {
-                    return false;
-                }
-            }
-            return true;
-
-        } catch (Exception ignore) {
-            try {
-                Method getFirstSignatureId = simpleReport.getClass().getMethod("getFirstSignatureId");
-                Object firstIdObj = getFirstSignatureId.invoke(simpleReport);
-                if (firstIdObj == null) {
-                    return false;
-                }
-
-                Method isValid = simpleReport.getClass().getMethod("isValid", String.class);
-                Object validObj = isValid.invoke(simpleReport, String.valueOf(firstIdObj));
-                return (validObj instanceof Boolean b) && b;
-
-            } catch (Exception ignoredAgain) {
+        for (String id : ids) {
+            if (!invokeBooleanMethod(simpleReport, "isValid", id, false)) {
                 return false;
             }
         }
+        return true;
     }
 
-    /* ====================== Crypto verify path ====================== */
-
-    /**
-     * Verifies a JWS signature using the selected JWA algorithm family.
-     *
-     * Supported:
-     * - RS512
-     * - PS512
-     * - ES256 / ES384 / ES512
-     *
-     * For ECDSA both standard raw R||S and proprietary DER + pre-hash variants are supported.
-     */
     private static boolean verifyJws(byte[] signingInput, byte[] sig, PublicKey pub, String alg) throws Exception {
         switch (alg) {
             case "RS512": {
@@ -500,51 +706,27 @@ public class VerifyCmd implements Runnable {
         return switch (alg) {
             case "ES256" -> 32;
             case "ES384" -> 48;
-            case "ES512" -> 66; // P-521
+            case "ES512" -> 66;
             default -> throw new IllegalArgumentException("Unknown ECDSA alg: " + alg);
         };
     }
 
-    /* ====================== Helpers ====================== */
-
-    /**
-     * Heuristic: JSON input containing protected + signature.
-     * Includes plain JOSE JSON and Berlin Group wrapper JSON.
-     */
     private static boolean isJsonSerialization(String s) {
         return s.contains("\"protected\"") && s.contains("\"signature\"");
     }
 
-    /**
-     * Detect Berlin Group wrapper JSON:
-     * {
-     *   "signatureData": {
-     *     "protected": "...",
-     *     "signature": "..."
-     *   }
-     * }
-     */
     private static boolean isBerlinGroupSerialization(String s) {
         return s.contains("\"signatureData\"")
                 && s.contains("\"protected\"")
                 && s.contains("\"signature\"");
     }
 
-    /**
-     * Detect plain JOSE JSON serialization and exclude BG wrapper JSON.
-     */
     private static boolean isPlainJoseJsonSerialization(String s) {
         return s.contains("\"protected\"")
                 && s.contains("\"signature\"")
                 && !s.contains("\"signatureData\"");
     }
 
-    /**
-     * Minimal extraction of a simple JSON string field:
-     * "key":"value"
-     *
-     * Sufficient for current JOSE/BG structures in this project.
-     */
     private static String extractJsonValue(String json, String keyWithQuotes) {
         int i = json.indexOf(keyWithQuotes);
         if (i < 0) throw new IllegalArgumentException("Missing JSON field " + keyWithQuotes);
@@ -564,10 +746,6 @@ public class VerifyCmd implements Runnable {
         return out;
     }
 
-    /**
-     * Loads detached payload and optionally applies JCS canonicalization.
-     * This must match the signing procedure exactly.
-     */
     private byte[] loadDetachedPayloadPossiblyCanonicalized() throws Exception {
         byte[] raw = Files.readAllBytes(payloadFile);
         boolean doCanonicalize = canonicalizePayload != null && canonicalizePayload.equalsIgnoreCase("jcs");
@@ -589,9 +767,6 @@ public class VerifyCmd implements Runnable {
         return c == '{' || c == '[';
     }
 
-    /**
-     * Converts JWS ECDSA raw R||S into DER SEQUENCE.
-     */
     private static byte[] concatToDer(byte[] jwsSignature, int fieldSizeBytes) {
         if (jwsSignature == null || jwsSignature.length != fieldSizeBytes * 2) {
             throw new IllegalArgumentException("Invalid JWS ECDSA signature length.");

@@ -9,6 +9,7 @@ artificialrobotics\com\SigningAuthorisation\examples\ExampleVerifyBerlinGroup$Al
 artificialrobotics\com\SigningAuthorisation\signingKeys\PrivateKeyFactory.class
 artificialrobotics\com\SigningAuthorisation\signingKeys\PrivateKeyLoader.class
 artificialrobotics\com\SigningAuthorisation\examples\package-info.class
+artificialrobotics\com\SigningAuthorisation\cli\VerifyCmd$TriState.class
 artificialrobotics\com\SigningAuthorisation\examples\ExampleVerifyBerlinGroup.class
 artificialrobotics\com\SigningAuthorisation\InitBC.class
 artificialrobotics\com\SigningAuthorisation\cli\EcdsaDer.class
@@ -35,5 +36,6 @@ artificialrobotics\com\SigningAuthorisation\signingKeys\PEMPublicKeyLoader.class
 artificialrobotics\com\SigningAuthorisation\json\JsonCanonicalizerJcs.class
 artificialrobotics\com\SigningAuthorisation\signingKeys\PublicKeyLoader.class
 artificialrobotics\com\SigningAuthorisation\signingKeys\RSAXmlPrivateKeyLoader.class
+artificialrobotics\com\SigningAuthorisation\cli\VerifyCmd$DssIndicationInfo.class
 artificialrobotics\com\SigningAuthorisation\signingKeys\RSAXmlPublicKeyLoader.class
 artificialrobotics\com\SigningAuthorisation\signingKeys\PKCS8KeyLoader.class

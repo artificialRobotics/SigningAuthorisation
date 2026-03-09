@@ -20,17 +20,31 @@ import java.util.regex.Pattern;
  *   1) Parse wrapper -> get protected + signature
  *   2) Decode protected header JSON
  *   3) Extract and validate "sub"
- *   4) Extract "alg" and check it is PS512 or ES512
- *   5) Canonicalize payload using JCS and Base64URL-encode it (mirrors signer)
- *   6) Build signing input: ASCII(protectedB64 + "." + payloadB64)
- *   7) Compute SHA-512 over signing input
- *   8) Decode signature bytes
- *   9) Single verification call: verifySignature(protected, signature, messageToVerify)
+ *   4) Extract and sanity-check "iat"
+ *   5) Optionally inspect "x5t#S256" (informational consistency check)
+ *   6) Extract "alg" and check it is PS512 or ES512
+ *   7) Canonicalize payload using JCS and Base64URL-encode it (mirrors signer)
+ *   8) Build signing input: ASCII(protectedB64 + "." + payloadB64)
+ *   9) Compute SHA-512 over signing input
+ *  10) Decode signature bytes
+ *  11) Single verification call: verifySignature(protected, signature, messageToVerify)
  *
- * NOTE:
+ * Project note:
  *   - messageToVerify == SHA-512(signingInput)
  *   - For PS512: messageToVerify is the RSA-PSS pre-hash
- *   - For ES512: messageToVerify is the final ECDSA message (NONEwithECDSA, no internal hashing)
+ *   - For ES512: messageToVerify is the final ECDSA message for NONEwithECDSA
+ *
+ * Important ES512 update:
+ *   - The signer now emits a JWS-compliant JOSE ECDSA signature format (raw R||S),
+ *     not DER.
+ *   - Therefore, verification must transcode raw R||S -> DER before passing the
+ *     signature to NONEwithECDSA.
+ *
+ * Certificate references:
+ *   - x5c is used consistently in this example as the source for extracting the
+ *     public key / leaf certificate.
+ *   - x5t#S256 may be present and can be checked for consistency, but is not used
+ *     as the key source here.
  */
 public class ExampleVerifyBerlinGroup {
 
@@ -42,6 +56,10 @@ public class ExampleVerifyBerlinGroup {
             Pattern.compile("\"sub\"\\s*:\\s*\"([^\"]*)\"");
     private static final Pattern ALG_PATTERN =
             Pattern.compile("\"alg\"\\s*:\\s*\"([^\"]*)\"");
+    private static final Pattern IAT_PATTERN =
+            Pattern.compile("\"iat\"\\s*:\\s*(\\d+)");
+    private static final Pattern X5T_S256_PATTERN =
+            Pattern.compile("\"x5t#S256\"\\s*:\\s*\"([^\"]+)\"");
 
     /** Algorithm registry (selection via map, no switch needed inside verifySignature). */
     private static final Map<String, AlgoVerifier> VERIFIERS = new HashMap<>();
@@ -72,7 +90,22 @@ public class ExampleVerifyBerlinGroup {
             throw new IllegalArgumentException("Missing or empty 'sub' claim in protected header.");
         }
 
-        // 4) Extract alg and check it is PS512 or ES512
+        // 4) Extract and sanity-check "iat"
+        Long iat = extractNumericClaim(protectedJson, IAT_PATTERN);
+        if (iat == null || iat <= 0L) {
+            throw new IllegalArgumentException("Missing or invalid 'iat' claim in protected header.");
+        }
+
+        // 5) Optional informational check of x5t#S256 consistency against x5c[0]
+        String x5tS256 = extractClaim(protectedJson, X5T_S256_PATTERN);
+        if (x5tS256 != null && !x5tS256.isBlank()) {
+            String expected = computeX5tS256FromProtectedHeaderX5c(protectedJson);
+            if (!x5tS256.equals(expected)) {
+                throw new IllegalArgumentException("x5t#S256 does not match x5c[0] certificate.");
+            }
+        }
+
+        // 6) Extract alg and check it is PS512 or ES512
         String alg = extractClaim(protectedJson, ALG_PATTERN);
         if (alg == null || alg.isEmpty()) {
             throw new IllegalArgumentException("Missing or empty 'alg' claim in protected header.");
@@ -81,24 +114,23 @@ public class ExampleVerifyBerlinGroup {
             throw new IllegalArgumentException("Unsupported alg in protected header: " + alg);
         }
 
-        // 5) Canonicalize payload using JCS and Base64URL-encode it (mirrors signer)
+        // 7) Canonicalize payload using JCS and Base64URL-encode it (mirrors signer)
         String payloadB64 = payloadJsonToBase64UrlJcs(payloadJson);
 
-        // 6) Build signing input (ASCII) as defined by RFC 7515 §5
+        // 8) Build signing input (ASCII) as defined by RFC 7515 §5
         byte[] signingInput = (bg.protectedB64 + "." + payloadB64).getBytes(StandardCharsets.US_ASCII);
 
-        // 7) Compute SHA-512 over signing input
+        // 9) Compute SHA-512 over signing input
         byte[] digest = MessageDigest.getInstance("SHA-512").digest(signingInput);
 
-        // 8) Decode signature bytes
+        // 10) Decode signature bytes
         byte[] sig = Base64.getUrlDecoder().decode(bg.signatureB64);
 
-        // 9) Single verification call:
-        //    verifySignature(protected, signature, messageToVerify)
+        // 11) Single verification call
         return verifySignature(protectedJson, sig, digest);
     }
 
-    /* ---------- Step 9: single verification method ---------- */
+    /* ---------- Step 11: single verification method ---------- */
 
     public static boolean verifySignature(String protectedJson, byte[] signature, byte[] messageToVerify) throws Exception {
 
@@ -143,11 +175,15 @@ public class ExampleVerifyBerlinGroup {
 
     /**
      * ES512 verification over messageToVerify (digest) WITHOUT internal hashing.
-     * Uses NONEwithECDSA via BC provider.
      *
-     * Signature is expected to be DER-encoded (ASN.1 SEQUENCE r,s) as produced by JCA.
+     * Important:
+     *   - The signer emits JOSE raw R||S encoding (132 bytes for ES512 / P-521).
+     *   - JCA NONEwithECDSA expects DER.
+     *   - Therefore raw R||S is transcoded to DER before verification.
      */
-    private static boolean verifyEs512NoHash(PublicKey pub, byte[] digest, byte[] sigDer) throws Exception {
+    private static boolean verifyEs512NoHash(PublicKey pub, byte[] digest, byte[] sigJoseConcat) throws Exception {
+        byte[] sigDer = transcodeConcatToDer(sigJoseConcat, 66);
+
         var s = java.security.Signature.getInstance("NONEwithECDSA", "BC");
         s.initVerify(pub);
         s.update(digest);
@@ -167,6 +203,16 @@ public class ExampleVerifyBerlinGroup {
         var cert = (java.security.cert.X509Certificate)
                 cf.generateCertificate(new java.io.ByteArrayInputStream(certDer));
         return cert.getPublicKey();
+    }
+
+    private static String computeX5tS256FromProtectedHeaderX5c(String protectedHeaderJson) throws Exception {
+        String leafCertDerB64 = extractFirstStringFromJsonArray(protectedHeaderJson, "\"x5c\"");
+        if (leafCertDerB64 == null) {
+            throw new IllegalArgumentException("Missing x5c[0] in protected header.");
+        }
+        byte[] certDer = Base64.getDecoder().decode(leafCertDerB64);
+        byte[] digest = MessageDigest.getInstance("SHA-256").digest(certDer);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(digest);
     }
 
     private static String extractFirstStringFromJsonArray(String json, String keyWithQuotes) {
@@ -227,19 +273,112 @@ public class ExampleVerifyBerlinGroup {
         return m.find() ? m.group(1) : null;
     }
 
+    private static Long extractNumericClaim(String json, Pattern p) {
+        Matcher m = p.matcher(json);
+        if (!m.find()) {
+            return null;
+        }
+        return Long.parseLong(m.group(1));
+    }
+
+    /* ---------- JOSE raw R||S -> DER for ECDSA verification ---------- */
+
+    /**
+     * Converts JOSE raw ECDSA signature R||S into ASN.1 DER SEQUENCE.
+     *
+     * For ES512 / P-521:
+     *   - fieldSizeBytes = 66
+     *   - raw signature length = 132
+     */
+    private static byte[] transcodeConcatToDer(byte[] jwsSignature, int fieldSizeBytes) {
+        if (jwsSignature == null || jwsSignature.length != fieldSizeBytes * 2) {
+            throw new IllegalArgumentException("Invalid JWS ECDSA signature length.");
+        }
+
+        byte[] r = new byte[fieldSizeBytes];
+        byte[] s = new byte[fieldSizeBytes];
+        System.arraycopy(jwsSignature, 0, r, 0, fieldSizeBytes);
+        System.arraycopy(jwsSignature, fieldSizeBytes, s, 0, fieldSizeBytes);
+
+        byte[] rDer = unsignedIntegerToDer(r);
+        byte[] sDer = unsignedIntegerToDer(s);
+
+        int seqLen = rDer.length + sDer.length;
+        byte[] seqLenEnc = derLength(seqLen);
+
+        byte[] out = new byte[1 + seqLenEnc.length + seqLen];
+        int pos = 0;
+        out[pos++] = 0x30; // SEQUENCE
+        System.arraycopy(seqLenEnc, 0, out, pos, seqLenEnc.length);
+        pos += seqLenEnc.length;
+        System.arraycopy(rDer, 0, out, pos, rDer.length);
+        pos += rDer.length;
+        System.arraycopy(sDer, 0, out, pos, sDer.length);
+
+        return out;
+    }
+
+    private static byte[] unsignedIntegerToDer(byte[] value) {
+        int firstNonZero = 0;
+        while (firstNonZero < value.length - 1 && value[firstNonZero] == 0) {
+            firstNonZero++;
+        }
+
+        int len = value.length - firstNonZero;
+        boolean needsLeadingZero = (value[firstNonZero] & 0x80) != 0;
+
+        int contentLen = len + (needsLeadingZero ? 1 : 0);
+        byte[] lenEnc = derLength(contentLen);
+
+        byte[] out = new byte[1 + lenEnc.length + contentLen];
+        int pos = 0;
+        out[pos++] = 0x02; // INTEGER
+        System.arraycopy(lenEnc, 0, out, pos, lenEnc.length);
+        pos += lenEnc.length;
+
+        if (needsLeadingZero) {
+            out[pos++] = 0x00;
+        }
+
+        System.arraycopy(value, firstNonZero, out, pos, len);
+        return out;
+    }
+
+    private static byte[] derLength(int length) {
+        if (length < 0x80) {
+            return new byte[]{(byte) length};
+        }
+
+        int temp = length;
+        int numBytes = 0;
+        while (temp > 0) {
+            numBytes++;
+            temp >>= 8;
+        }
+
+        byte[] out = new byte[1 + numBytes];
+        out[0] = (byte) (0x80 | numBytes);
+
+        for (int i = numBytes; i > 0; i--) {
+            out[i] = (byte) (length & 0xFF);
+            length >>= 8;
+        }
+
+        return out;
+    }
+
     /* ---------- Demo ---------- */
 
     public static void main(String[] args) throws Exception {
 
-    	//please insert here the Berlin Group signatureDate 
+        // please insert here the Berlin Group signatureData
         String berlinGroupWrapper = """
 {
   "signatureData": {
-    "protected": "eyJhbGciOiJFUzUxMiIsInNpZ1QiOiIyMDI2LTAyLTAxVDE5OjQzOjI4WiIsInN1YiI6Im15UGF5bWVudFJlc291cmNlSWQxMjM0NSIsImNhbm9uQWxnIjoiaHR0cDovL2pzb24tY2Fub25pY2FsaXphdGlvbi5vcmcvYWxnb3JpdGhtIiwieDV1IjoiaHR0cHM6Ly9leGFtcGxlLm9yZy9jZXJ0cy9tZWluZV90ZXN0X2dtYmhfY2VydC5wZW0iLCJjcml0IjpbImNhbm9uQWxnIiwic2lnVCIsInN1YiJdLCJ4NWMiOlsiTUlJQ3VqQ0NBaHVnQXdJQkFnSVVEZCtnQU1sV3pMTCtUMmJia3NmeC9ab3FZdjB3Q2dZSUtvWkl6ajBFQXdRd2FERUxNQWtHQTFVRUJoTUNSRVV4RkRBU0JnTlZCQW9NQzAxMWMzUmxjaUJIYldKSU1SUXdFZ1lEVlFRRERBdE5kWE4wWlhJZ1IyMWlTREVUTUJFR0ExVUVDd3dLVUdGNWJXVnVkRWgxWWpFWU1CWUdBMVVFWVF3UFRsUlNSRVV0U0ZKQ01USXpORFUyTUI0WERUSTJNREl3TVRFM05EUTFObG9YRFRNMk1ERXpNREUzTkRRMU5sb3dhREVMTUFrR0ExVUVCaE1DUkVVeEZEQVNCZ05WQkFvTUMwMTFjM1JsY2lCSGJXSklNUlF3RWdZRFZRUUREQXROZFhOMFpYSWdSMjFpU0RFVE1CRUdBMVVFQ3d3S1VHRjViV1Z1ZEVoMVlqRVlNQllHQTFVRVlRd1BUbFJTUkVVdFNGSkNNVEl6TkRVMk1JR2JNQkFHQnlxR1NNNDlBZ0VHQlN1QkJBQWpBNEdHQUFRQXlwVGlmczZ6RVo0NUFPRitFV3VBYXN2eXpMYmFQR3Z3SDIwSHd2cUZMNXFSMEtZTURaejczWVVNeWQzSmZvQVFjSUN3bTZQWHlFWHVRMzM0aTV1dTMzVUJGNFQ4QTFTdEh2M0JRWGtzanhLVFgrNVoyZlFGOE1XbXk2U2tvQlE3RVZTUUJHTXduRUJiSG5vZm9mTGREQW5RMEhQV1g0YkpyTUdqTzZNcURycitTcktqWURCZU1Bd0dBMVVkRXdFQi93UUNNQUF3RGdZRFZSMFBBUUgvQkFRREFnYkFNQjBHQTFVZERnUVdCQlQ0NmdybU9BNDVvMUpKdUhRNFlST2psRWZpYVRBZkJnTlZIU01FR0RBV2dCVDQ2Z3JtT0E0NW8xSkp1SFE0WVJPamxFZmlhVEFLQmdncWhrak9QUVFEQkFPQmpBQXdnWWdDUWdEZlVHWFQ2cnFWTHZTVU5XRUU5TEQ2VjFlVno0L1FEN0FkY0ZpMk5IZFZXRnplUGE2dWZRVDFCMFg2eDBSb0JQVm5ZWmxsb05YQUI5Z0x1bllYUnVrWERRSkNBSmtDcmNXNGdkNmpOTnVOWjBTenJHTHRTYWlmVjA3NXBCZUdLTkxBalg2N3AvRno5UllnUC95Y09tYkI2bHhKM0tDVDFNVEJ0NEh4RmJOYVloSS90SWpQIl19",
-    "signature": "MIGHAkIAp2CKpqEH0pY1yYTyx7-qJAkV24m4HorISUpfEd6rstrZqLzwLuO9DU5eMtLkk7qg1C4Py1C82lmGPIF23dOixKoCQWtBlRPAo_d7D4J284Tyj1lGEzWLV2SDVWp9P2iHElpiUzS-KiMSsCJdZsw50GRzJNr62TGnX55JFQIrORL4_rWr"
+    "protected": "eyJhbGciOiJFUzUxMiIsInN1YiI6Im15UGF5bWVudFJlc291cmNlSWQxMjM0NSIsImNhbm9uQWxnIjoiaHR0cDovL2pzb24tY2Fub25pY2FsaXphdGlvbi5vcmcvYWxnb3JpdGhtIiwiY3JpdCI6WyJjYW5vbkFsZyJdLCJpYXQiOjE3NzMwNDQ1ODUsIng1YyI6WyJNSUlDdWpDQ0FodWdBd0lCQWdJVURkK2dBTWxXekxMK1QyYmJrc2Z4L1pvcVl2MHdDZ1lJS29aSXpqMEVBd1F3YURFTE1Ba0dBMVVFQmhNQ1JFVXhGREFTQmdOVkJBb01DMDExYzNSbGNpQkhiV0pJTVJRd0VnWURWUVFEREF0TmRYTjBaWElnUjIxaVNERVRNQkVHQTFVRUN3d0tVR0Y1YldWdWRFaDFZakVZTUJZR0ExVUVZUXdQVGxSU1JFVXRTRkpDTVRJek5EVTJNQjRYRFRJMk1ESXdNVEUzTkRRMU5sb1hEVE0yTURFek1ERTNORFExTmxvd2FERUxNQWtHQTFVRUJoTUNSRVV4RkRBU0JnTlZCQW9NQzAxMWMzUmxjaUJIYldKSU1SUXdFZ1lEVlFRRERBdE5kWE4wWlhJZ1IyMWlTREVUTUJFR0ExVUVDd3dLVUdGNWJXVnVkRWgxWWpFWU1CWUdBMVVFWVF3UFRsUlNSRVV0U0ZKQ01USXpORFUyTUlHYk1CQUdCeXFHU000OUFnRUdCU3VCQkFBakE0R0dBQVFBeXBUaWZzNnpFWjQ1QU9GK0VXdUFhc3Z5ekxiYVBHdndIMjBId3ZxRkw1cVIwS1lNRFp6NzNZVU15ZDNKZm9BUWNJQ3dtNlBYeUVYdVEzMzRpNXV1MzNVQkY0VDhBMVN0SHYzQlFYa3NqeEtUWCs1WjJmUUY4TVdteTZTa29CUTdFVlNRQkdNd25FQmJIbm9mb2ZMZERBblEwSFBXWDRiSnJNR2pPNk1xRHJyK1NyS2pZREJlTUF3R0ExVWRFd0VCL3dRQ01BQXdEZ1lEVlIwUEFRSC9CQVFEQWdiQU1CMEdBMVVkRGdRV0JCVDQ2Z3JtT0E0NW8xSkp1SFE0WVJPamxFZmlhVEFmQmdOVkhTTUVHREFXZ0JUNDZncm1PQTQ1bzFKSnVIUTRZUk9qbEVmaWFUQUtCZ2dxaGtqT1BRUURCQU9CakFBd2dZZ0NRZ0RmVUdYVDZycVZMdlNVTldFRTlMRDZWMWVWejQvUUQ3QWRjRmkyTkhkVldGemVQYTZ1ZlFUMUIwWDZ4MFJvQlBWbllabGxvTlhBQjlnTHVuWVhSdWtYRFFKQ0FKa0NyY1c0Z2Q2ak5OdU5aMFN6ckdMdFNhaWZWMDc1cEJlR0tOTEFqWDY3cC9GejlSWWdQL3ljT21iQjZseEozS0NUMU1UQnQ0SHhGYk5hWWhJL3RJalAiXSwieDV0I1MyNTYiOiJmN3ZvQzRveXBCemxEWmxhZFpZa3FYMEVQc1U1MjRFLWNjb29BdzRLYlhNIn0",
+    "signature": "AN9YyRlBPRKEYPmOGAj35VbRKEowohD2x9crZJ9FvW1PVIuaWNqi7IKdkFbDqJwpt8p4sj8yGaBg2-LZi1323Aw8AXOxVmhfuRpiGiICjpf4L1oEhfdqs5My_66LjqgLAm19e6eT5l7LDqUbB7MGzBoF1s0GUfa2BfHY5px1PSAp2i-N"
   }
 }
-
                 """;
 
         String payloadJson = """
@@ -253,6 +392,6 @@ public class ExampleVerifyBerlinGroup {
                 """;
 
         boolean ok = verifyDetachedBerlinGroup(berlinGroupWrapper, payloadJson);
-        System.out.println("VALID (crypto-only, PS512, pre-hash): " + ok);
+        System.out.println("VALID (crypto-only, BG detached, pre-hash): " + ok);
     }
 }

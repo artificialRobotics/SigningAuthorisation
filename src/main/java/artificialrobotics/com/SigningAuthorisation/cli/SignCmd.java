@@ -43,16 +43,19 @@ import java.util.Map;
  *  - Optional payload canonicalization via JCS (RFC 8785) signaled by "canonAlg",
  *  - Optional x5t#S256 header generation,
  *  - Optional final allow-list filtering for "crit" via --critClaimList,
+ *  - Optional iat generation,
  *  - Keys from file or keystore.
  *
  * IMPORTANT (project protocol alignment):
- *  - For ES256/ES384/ES512 in this project configuration, we use a PRE-HASH model:
+ *  - For ES256/ES384/ES512 in this project configuration, a PRE-HASH model is used:
  *      digest = HASH(signingInputBytes)
- *      signature = NONEwithECDSA over digest  (DER signature bytes)
- *    This disables internal hashing and matches the ES* verification approach used in the example verifier.
+ *      derSignature = NONEwithECDSA over digest
+ *      jwsSignature = JOSE raw R||S converted from DER
  *
- *  - PS512 remains standard "RSASSA-PSS" over signingInputBytes (internal hashing),
- *    because user indicated this is already working in tests.
+ *    This preserves the project’s external pre-hash model while emitting a
+ *    JWS-compliant ECDSA signature encoding.
+ *
+ *  - PS512 remains standard "RSASSA-PSS" over signingInputBytes (internal hashing).
  */
 @CommandLine.Command(
         name = "sign",
@@ -466,7 +469,8 @@ public class SignCmd implements Runnable {
      * - RS512: standard JWS path (hashing inside algorithm)
      * - PS512: standard JWS path (RSASSA-PSS over signingInputBytes; hashing inside)
      * - ES256/ES384/ES512: project protocol path
-     *     signature = NONEwithECDSA over digest (DER signature bytes)
+     *     derSignature = NONEwithECDSA over digest
+     *     jwsSignature = DER -> raw R||S
      */
     private static byte[] signJws(byte[] signingInputBytes,
                                   byte[] signingInputDigest,
@@ -493,10 +497,89 @@ public class SignCmd implements Runnable {
                 Signature s = Signature.getInstance("NONEwithECDSA", "BC");
                 s.initSign(key);
                 s.update(signingInputDigest);
-                return s.sign();
+                byte[] derSig = s.sign();
+                return transcodeDerToConcat(derSig, ecdsaFieldSizeBytes(alg));
             }
             default -> throw new IllegalArgumentException("Unsupported alg: " + alg);
         }
+    }
+
+    private static int ecdsaFieldSizeBytes(String alg) {
+        return switch (alg) {
+            case "ES256" -> 32;
+            case "ES384" -> 48;
+            case "ES512" -> 66; // P-521
+            default -> throw new IllegalArgumentException("Unknown ECDSA alg: " + alg);
+        };
+    }
+
+    /**
+     * Converts ASN.1 DER encoded ECDSA signature into JOSE raw R||S format.
+     */
+    private static byte[] transcodeDerToConcat(byte[] derSignature, int outputLength) {
+        if (derSignature == null || derSignature.length < 8 || derSignature[0] != 0x30) {
+            throw new IllegalArgumentException("Invalid DER ECDSA signature format.");
+        }
+
+        int offset;
+        int seqLength;
+
+        if ((derSignature[1] & 0x80) == 0) {
+            seqLength = derSignature[1] & 0x7F;
+            offset = 2;
+        } else {
+            int lenBytes = derSignature[1] & 0x7F;
+            if (lenBytes < 1 || lenBytes > 2) {
+                throw new IllegalArgumentException("Unsupported DER length encoding.");
+            }
+            seqLength = 0;
+            for (int i = 0; i < lenBytes; i++) {
+                seqLength = (seqLength << 8) | (derSignature[2 + i] & 0xFF);
+            }
+            offset = 2 + lenBytes;
+        }
+
+        if (offset + seqLength != derSignature.length) {
+            throw new IllegalArgumentException("Invalid DER sequence length.");
+        }
+
+        if (derSignature[offset] != 0x02) {
+            throw new IllegalArgumentException("Invalid DER format: expected INTEGER for R.");
+        }
+        int rLen = derSignature[offset + 1] & 0xFF;
+        int rOffset = offset + 2;
+
+        int sTagOffset = rOffset + rLen;
+        if (sTagOffset >= derSignature.length || derSignature[sTagOffset] != 0x02) {
+            throw new IllegalArgumentException("Invalid DER format: expected INTEGER for S.");
+        }
+        int sLen = derSignature[sTagOffset + 1] & 0xFF;
+        int sOffset = sTagOffset + 2;
+
+        byte[] concat = new byte[2 * outputLength];
+
+        copyDerIntegerToFixed(derSignature, rOffset, rLen, concat, 0, outputLength);
+        copyDerIntegerToFixed(derSignature, sOffset, sLen, concat, outputLength, outputLength);
+
+        return concat;
+    }
+
+    private static void copyDerIntegerToFixed(byte[] der, int srcOffset, int srcLen,
+                                              byte[] dest, int destOffset, int destLen) {
+        while (srcLen > 1 && der[srcOffset] == 0x00) {
+            srcOffset++;
+            srcLen--;
+        }
+
+        if (srcLen > destLen) {
+            throw new IllegalArgumentException("DER integer too large for expected JOSE field size.");
+        }
+
+        int pad = destLen - srcLen;
+        for (int i = 0; i < pad; i++) {
+            dest[destOffset + i] = 0x00;
+        }
+        System.arraycopy(der, srcOffset, dest, destOffset + pad, srcLen);
     }
 
     private static boolean looksLikeJson(String s) {
