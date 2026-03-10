@@ -31,7 +31,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.KeyStore;
 import java.security.MessageDigest;
+import java.security.Provider;
 import java.security.PublicKey;
+import java.security.Security;
 import java.security.Signature;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
@@ -331,6 +333,7 @@ public class VerifyCmd implements Runnable {
         debugMultiline("crypto protected.json", protectedStr);
         debug("crypto signature bytes", String.valueOf(sig.length));
         debug("crypto signature b64url prefix", abbreviate(signatureB64, 120));
+        debug("installed providers", providerList());
 
         X509Certificate externalCert = null;
         PublicKey pub;
@@ -875,99 +878,164 @@ public class VerifyCmd implements Runnable {
 
     /* ====================== Crypto verification ====================== */
 
-    private static boolean verifyJwsUsingProvidedDigest(byte[] providedDigest, byte[] sig, PublicKey pub, String alg) throws Exception {
-        switch (alg) {
-            case "RS512": {
-                byte[] digestInfo = wrapSha512DigestInfo(providedDigest);
-                Signature v = Signature.getInstance("NONEwithRSA", "BC");
-                v.initVerify(pub);
-                v.update(digestInfo);
-                return v.verify(sig);
-            }
-            case "PS512": {
-                Signature v = Signature.getInstance("RAWRSASSA-PSS", "BC");
-                PSSParameterSpec pss = new PSSParameterSpec(
-                        "SHA-512", "MGF1",
-                        new java.security.spec.MGF1ParameterSpec("SHA-512"),
-                        64, 1);
-                v.setParameter(pss);
-                v.initVerify(pub);
-                v.update(providedDigest);
-                return v.verify(sig);
-            }
-            case "ES256":
-            case "ES384":
-            case "ES512": {
-                int fieldSize = ecdsaFieldSizeBytes(alg);
-                boolean looksLikeRawConcat = (sig.length == 2 * fieldSize);
-                boolean looksLikeDer = (sig.length > 0 && sig[0] == 0x30);
-
-                Signature v = Signature.getInstance("NONEwithECDSA", "BC");
-                v.initVerify(pub);
-                v.update(providedDigest);
-
-                if (looksLikeRawConcat) return v.verify(concatToDer(sig, fieldSize));
-                if (looksLikeDer) return v.verify(sig);
-
-                throw new IllegalArgumentException("Unsupported ECDSA signature encoding (neither raw R||S nor DER).");
-            }
-            default:
-                throw new IllegalArgumentException("Unsupported alg for --payloadHashFile: " + alg);
-        }
+    private boolean verifyJwsUsingProvidedDigest(byte[] providedDigest, byte[] sig, PublicKey pub, String alg) throws Exception {
+        return switch (alg) {
+            case "RS512" -> verifyRs512WithProvidedDigest(providedDigest, sig, pub);
+            case "PS512" -> verifyPs512WithProvidedDigest(providedDigest, sig, pub);
+            case "ES256", "ES384", "ES512" -> verifyEsWithProvidedDigest(providedDigest, sig, pub, alg);
+            default -> throw new IllegalArgumentException("Unsupported alg for --payloadHashFile: " + alg);
+        };
     }
 
-    private static boolean verifyJws(byte[] signingInput, byte[] sig, PublicKey pub, String alg) throws Exception {
-        switch (alg) {
-            case "RS512": {
-                Signature v = Signature.getInstance("SHA512withRSA");
-                v.initVerify(pub);
-                v.update(signingInput);
-                return v.verify(sig);
+    private boolean verifyJws(byte[] signingInput, byte[] sig, PublicKey pub, String alg) throws Exception {
+        return switch (alg) {
+            case "RS512" -> verifyRs512Standard(signingInput, sig, pub);
+            case "PS512" -> verifyPs512Standard(signingInput, sig, pub);
+            case "ES256", "ES384", "ES512" -> verifyEsStandard(signingInput, sig, pub, alg);
+            default -> throw new IllegalArgumentException("Unsupported alg: " + alg);
+        };
+    }
+
+    private boolean verifyRs512Standard(byte[] signingInput, byte[] sig, PublicKey pub) throws Exception {
+        Boolean result = tryVerifyWithSignature("RS512 default", "SHA512withRSA", null, null, pub, signingInput, sig);
+        if (Boolean.TRUE.equals(result)) return true;
+
+        result = tryVerifyWithSignature("RS512 BC", "SHA512withRSA", "BC", null, pub, signingInput, sig);
+        return Boolean.TRUE.equals(result);
+    }
+
+    private boolean verifyPs512Standard(byte[] signingInput, byte[] sig, PublicKey pub) throws Exception {
+        PSSParameterSpec pss = new PSSParameterSpec(
+                "SHA-512", "MGF1",
+                new java.security.spec.MGF1ParameterSpec("SHA-512"),
+                64, 1);
+
+        Boolean result = tryVerifyWithSignature("PS512 default RSASSA-PSS", "RSASSA-PSS", null, pss, pub, signingInput, sig);
+        if (Boolean.TRUE.equals(result)) return true;
+
+        result = tryVerifyWithSignature("PS512 BC RSASSA-PSS", "RSASSA-PSS", "BC", pss, pub, signingInput, sig);
+        if (Boolean.TRUE.equals(result)) return true;
+
+        result = tryVerifyWithSignature("PS512 BC SHA512withRSAandMGF1", "SHA512withRSAandMGF1", "BC", null, pub, signingInput, sig);
+        return Boolean.TRUE.equals(result);
+    }
+
+    private boolean verifyEsStandard(byte[] signingInput, byte[] sig, PublicKey pub, String alg) throws Exception {
+        int fieldSize = ecdsaFieldSizeBytes(alg);
+        int expectedRawLen = 2 * fieldSize;
+
+        boolean looksLikeRawConcat = (sig.length == expectedRawLen);
+        boolean looksLikeDer = (sig.length > 0 && sig[0] == 0x30);
+
+        debug("es standard looksLikeRawConcat", String.valueOf(looksLikeRawConcat));
+        debug("es standard looksLikeDer", String.valueOf(looksLikeDer));
+
+        if (looksLikeRawConcat) {
+            String jca = switch (alg) {
+                case "ES256" -> "SHA256withECDSA";
+                case "ES384" -> "SHA384withECDSA";
+                default -> "SHA512withECDSA";
+            };
+            byte[] der = concatToDer(sig, fieldSize);
+
+            Boolean result = tryVerifyWithSignature("ES standard default raw->DER", jca, null, null, pub, signingInput, der);
+            if (Boolean.TRUE.equals(result)) return true;
+
+            result = tryVerifyWithSignature("ES standard BC raw->DER", jca, "BC", null, pub, signingInput, der);
+            return Boolean.TRUE.equals(result);
+        }
+
+        if (looksLikeDer) {
+            byte[] digest = MessageDigest.getInstance(digestAlgForEsFamily(alg)).digest(signingInput);
+
+            Boolean result = tryVerifyWithSignature("ES prehash BC DER", "NONEwithECDSA", "BC", null, pub, digest, sig);
+            if (Boolean.TRUE.equals(result)) return true;
+
+            result = tryVerifyWithSignature("ES prehash default DER", "NONEwithECDSA", null, null, pub, digest, sig);
+            return Boolean.TRUE.equals(result);
+        }
+
+        throw new IllegalArgumentException("Unsupported ECDSA signature encoding (neither raw R||S nor DER).");
+    }
+
+    private boolean verifyRs512WithProvidedDigest(byte[] providedDigest, byte[] sig, PublicKey pub) throws Exception {
+        byte[] digestInfo = wrapSha512DigestInfo(providedDigest);
+
+        Boolean result = tryVerifyWithSignature("RS512 digest BC NONEwithRSA", "NONEwithRSA", "BC", null, pub, digestInfo, sig);
+        if (Boolean.TRUE.equals(result)) return true;
+
+        result = tryVerifyWithSignature("RS512 digest default NONEwithRSA", "NONEwithRSA", null, null, pub, digestInfo, sig);
+        return Boolean.TRUE.equals(result);
+    }
+
+    private boolean verifyPs512WithProvidedDigest(byte[] providedDigest, byte[] sig, PublicKey pub) throws Exception {
+        PSSParameterSpec pss = new PSSParameterSpec(
+                "SHA-512", "MGF1",
+                new java.security.spec.MGF1ParameterSpec("SHA-512"),
+                64, 1);
+
+        Boolean result = tryVerifyWithSignature("PS512 digest BC RAWRSASSA-PSS", "RAWRSASSA-PSS", "BC", pss, pub, providedDigest, sig);
+        if (Boolean.TRUE.equals(result)) return true;
+
+        result = tryVerifyWithSignature("PS512 digest default RAWRSASSA-PSS", "RAWRSASSA-PSS", null, pss, pub, providedDigest, sig);
+        return Boolean.TRUE.equals(result);
+    }
+
+    private boolean verifyEsWithProvidedDigest(byte[] providedDigest, byte[] sig, PublicKey pub, String alg) throws Exception {
+        int fieldSize = ecdsaFieldSizeBytes(alg);
+        boolean looksLikeRawConcat = (sig.length == 2 * fieldSize);
+        boolean looksLikeDer = (sig.length > 0 && sig[0] == 0x30);
+
+        debug("es digest looksLikeRawConcat", String.valueOf(looksLikeRawConcat));
+        debug("es digest looksLikeDer", String.valueOf(looksLikeDer));
+
+        if (looksLikeRawConcat) {
+            byte[] der = concatToDer(sig, fieldSize);
+
+            Boolean result = tryVerifyWithSignature("ES digest BC raw->DER", "NONEwithECDSA", "BC", null, pub, providedDigest, der);
+            if (Boolean.TRUE.equals(result)) return true;
+
+            result = tryVerifyWithSignature("ES digest default raw->DER", "NONEwithECDSA", null, null, pub, providedDigest, der);
+            return Boolean.TRUE.equals(result);
+        }
+
+        if (looksLikeDer) {
+            Boolean result = tryVerifyWithSignature("ES digest BC DER", "NONEwithECDSA", "BC", null, pub, providedDigest, sig);
+            if (Boolean.TRUE.equals(result)) return true;
+
+            result = tryVerifyWithSignature("ES digest default DER", "NONEwithECDSA", null, null, pub, providedDigest, sig);
+            return Boolean.TRUE.equals(result);
+        }
+
+        throw new IllegalArgumentException("Unsupported ECDSA signature encoding (neither raw R||S nor DER).");
+    }
+
+    private Boolean tryVerifyWithSignature(String label,
+                                           String algorithm,
+                                           String provider,
+                                           PSSParameterSpec pss,
+                                           PublicKey pub,
+                                           byte[] data,
+                                           byte[] sig) {
+        try {
+            Signature verifier = (provider == null || provider.isBlank())
+                    ? Signature.getInstance(algorithm)
+                    : Signature.getInstance(algorithm, provider);
+
+            if (pss != null) {
+                verifier.setParameter(pss);
             }
-            case "PS512": {
-                Signature v = Signature.getInstance("RSASSA-PSS");
-                PSSParameterSpec pss = new PSSParameterSpec(
-                        "SHA-512", "MGF1",
-                        new java.security.spec.MGF1ParameterSpec("SHA-512"),
-                        64, 1);
-                v.setParameter(pss);
-                v.initVerify(pub);
-                v.update(signingInput);
-                return v.verify(sig);
-            }
-            case "ES256":
-            case "ES384":
-            case "ES512": {
-                int fieldSize = ecdsaFieldSizeBytes(alg);
-                int expectedRawLen = 2 * fieldSize;
+            verifier.initVerify(pub);
+            verifier.update(data);
+            boolean ok = verifier.verify(sig);
 
-                boolean looksLikeRawConcat = (sig.length == expectedRawLen);
-                boolean looksLikeDer = (sig.length > 0 && sig[0] == 0x30);
-
-                if (looksLikeRawConcat) {
-                    String jca = switch (alg) {
-                        case "ES256" -> "SHA256withECDSA";
-                        case "ES384" -> "SHA384withECDSA";
-                        default -> "SHA512withECDSA";
-                    };
-                    Signature v = Signature.getInstance(jca);
-                    v.initVerify(pub);
-                    v.update(signingInput);
-                    return v.verify(concatToDer(sig, fieldSize));
-                }
-
-                if (looksLikeDer) {
-                    byte[] digest = MessageDigest.getInstance(digestAlgForEsFamily(alg)).digest(signingInput);
-                    Signature v = Signature.getInstance("NONEwithECDSA", "BC");
-                    v.initVerify(pub);
-                    v.update(digest);
-                    return v.verify(sig);
-                }
-
-                throw new IllegalArgumentException("Unsupported ECDSA signature encoding (neither raw R||S nor DER).");
-            }
-            default:
-                throw new IllegalArgumentException("Unsupported alg: " + alg);
+            String providerName = verifier.getProvider() != null ? verifier.getProvider().getName() : "n/a";
+            debug("verify attempt", label + " | alg=" + algorithm + " | provider=" + providerName + " | result=" + ok);
+            return ok;
+        } catch (Exception e) {
+            debug("verify attempt", label + " | alg=" + algorithm + " | provider=" + (provider == null ? "<default>" : provider)
+                    + " | exception=" + e.getClass().getSimpleName() + ": " + e.getMessage());
+            return null;
         }
     }
 
@@ -1261,6 +1329,15 @@ public class VerifyCmd implements Runnable {
         debug(label + " serial", cert.getSerialNumber().toString(16));
         debug(label + " cert sha256", sha256Base64(cert.getEncoded()));
         debug(label + " pubkey sha256", sha256Base64(cert.getPublicKey().getEncoded()));
+    }
+
+    private static String providerList() {
+        Provider[] providers = Security.getProviders();
+        List<String> names = new ArrayList<>();
+        for (Provider p : providers) {
+            names.add(p.getName());
+        }
+        return String.join(", ", names);
     }
 
     private static String sha512Base64(byte[] data) throws Exception {
