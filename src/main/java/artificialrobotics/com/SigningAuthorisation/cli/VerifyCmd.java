@@ -5,17 +5,24 @@ import artificialrobotics.com.SigningAuthorisation.certificates.PEMCertificateLo
 import artificialrobotics.com.SigningAuthorisation.json.JsonCanonicalizerJcs;
 import artificialrobotics.com.SigningAuthorisation.signingKeys.PublicKeyFactory;
 
+import eu.europa.esig.dss.detailedreport.DetailedReport;
+import eu.europa.esig.dss.diagnostic.DiagnosticData;
 import eu.europa.esig.dss.enumerations.MimeTypeEnum;
+import eu.europa.esig.dss.enumerations.TokenExtractionStrategy;
 import eu.europa.esig.dss.model.DSSDocument;
 import eu.europa.esig.dss.model.InMemoryDocument;
 import eu.europa.esig.dss.model.x509.CertificateToken;
+import eu.europa.esig.dss.simplecertificatereport.SimpleCertificateReport;
 import eu.europa.esig.dss.spi.validation.CommonCertificateVerifier;
 import eu.europa.esig.dss.spi.x509.CommonTrustedCertificateSource;
+import eu.europa.esig.dss.validation.CertificateValidator;
 import eu.europa.esig.dss.validation.SignedDocumentValidator;
+import eu.europa.esig.dss.validation.reports.CertificateReports;
 import eu.europa.esig.dss.validation.reports.Reports;
 
 import picocli.CommandLine;
 
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.InputStream;
 import java.lang.reflect.Method;
@@ -26,6 +33,7 @@ import java.security.KeyStore;
 import java.security.MessageDigest;
 import java.security.PublicKey;
 import java.security.Signature;
+import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.security.spec.PSSParameterSpec;
 import java.util.ArrayList;
@@ -35,48 +43,10 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * # VerifyCmd
- *
- * Verifies JWS/JAdES signatures in two modes:
- *  - crypto: local, crypto-only verification against a provided public key/certificate
- *  - eidas : verification via DSS using truststore and validation policy
- *
- * Supported inputs:
- *  - JWS Compact Serialization (RFC 7515 §3.1)
- *  - JWS JSON Serialization (RFC 7515 §7.2; single signature object)
- *  - Berlin Group wrapper JSON (BG)
- *
- * Detached & RFC 7797:
- *  - Detached payload is supported via --payload
- *  - RFC 7797 unencoded payload ("b64": false) is supported
- *
- * Canonicalization:
- *  - Optional JCS (RFC 8785) may be applied to the detached payload before verification
- *    using --canonicalize-payload=jcs. This must match the signing process exactly.
- *
- * Algorithm resolution:
- *  - --alg=ph resolves the algorithm from the protected header claim "alg"
- *
- * ECDSA note:
- *  - Standard JWS ES* uses raw R||S encoding, which is converted to DER for JCA verification
- *  - A proprietary ES* profile may use pre-hash + NONEwithECDSA and DER signatures directly
- *  - This verifier supports both forms in crypto mode
- *
- * Crypto input modes:
- *  - --payload: verifies by rebuilding the signing input
- *  - --payloadHashFile: verifies directly using the Base64/Base64URL encoded digest from file
- *
- * Exactly one of these modes may be used in the crypto path when detached verification is intended.
- *
- * DSS / eIDAS profile note:
- *  - BG wrapper JSON is transformed to plain JOSE JSON before handing it to DSS.
- *  - In DSS mode, --pub-dir / --pub-file are ignored. Trust is established via truststore.
- */
-@CommandLine.Command(name = "verify", description = "Verify JWS/JAdES (crypto-only or eIDAS/DSS).")
+@CommandLine.Command(name = "verify", description = "Verify JWS/JAdES (crypto-only, eIDAS/DSS, or mixed).")
 public class VerifyCmd implements Runnable {
 
-    @CommandLine.Option(names = "--mode", required = true, description = "crypto | eidas")
+    @CommandLine.Option(names = "--mode", required = true, description = "crypto | eidas | mixed")
     String mode;
 
     @CommandLine.Option(names = "--alg", required = true, description = "RS512 | PS512 | ES256 | ES384 | ES512 | ph")
@@ -99,7 +69,7 @@ public class VerifyCmd implements Runnable {
 
     @CommandLine.Option(
             names = "--payloadHashFile",
-            description = "Crypto mode only: File containing the Base64/Base64URL encoded hash value over the signing input. Used as alternative to --payload."
+            description = "Crypto or mixed mode only: File containing the Base64/Base64URL encoded hash value over the signing input. Used as alternative to --payload."
     )
     Path payloadHashFile;
 
@@ -125,101 +95,16 @@ public class VerifyCmd implements Runnable {
 
             final String content = Files.readString(inFile, StandardCharsets.UTF_8).trim();
 
-            if ("eidas".equalsIgnoreCase(mode)) {
-                verifyWithDss(content);
-                return;
-            }
-
-            /* ====================== CRYPTO MODE ====================== */
-
-            if (payloadFile != null && payloadHashFile != null) {
-                throw new IllegalArgumentException("In crypto mode, use either --payload OR --payloadHashFile, not both.");
-            }
-
-            String protectedB64;
-            String payloadB64 = null;
-            String signatureB64;
-
-            if (isJsonSerialization(content)) {
-                protectedB64 = extractJsonValue(content, "\"protected\"");
-                signatureB64 = extractJsonValue(content, "\"signature\"");
-                if (content.contains("\"payload\"")) {
-                    payloadB64 = extractJsonValue(content, "\"payload\"");
+            switch (mode.toLowerCase()) {
+                case "crypto" -> {
+                    boolean cryptoOk = verifyCrypto(content);
+                    System.out.println("VALID (crypto-only): " + cryptoOk);
+                    System.out.println(cryptoOk ? "FINAL RESULT: JWS IS VALID" : "FINAL RESULT: JWS IS NOT VALID");
                 }
-            } else {
-                String[] parts = content.split("\\.", -1);
-                if (parts.length != 3) {
-                    throw new IllegalArgumentException("Invalid compact JWS (expected 3 parts).");
-                }
-                protectedB64 = parts[0];
-                payloadB64 = parts[1];
-                signatureB64 = parts[2];
+                case "eidas" -> verifyWithDss(content);
+                case "mixed" -> verifyMixed(content);
+                default -> throw new IllegalArgumentException("Unsupported --mode: " + mode);
             }
-
-            byte[] protectedJson = Base64.getUrlDecoder().decode(protectedB64);
-            String protectedStr = new String(protectedJson, StandardCharsets.UTF_8);
-            boolean b64false = protectedStr.contains("\"b64\":false");
-
-            String resolvedAlg = alg;
-            if ("ph".equalsIgnoreCase(alg)) {
-                String headerAlg = extractJsonValue(protectedStr, "\"alg\"");
-                if (headerAlg == null || headerAlg.isEmpty()) {
-                    throw new IllegalArgumentException("Protected header does not contain an 'alg' claim.");
-                }
-                resolvedAlg = headerAlg;
-            }
-
-            byte[] sig = Base64.getUrlDecoder().decode(signatureB64);
-
-            if (pubDir == null || pubFile == null) {
-                throw new IllegalArgumentException("crypto mode requires --pub-dir and --pub-file (public key or certificate).");
-            }
-
-            PublicKey pub;
-            try {
-                pub = PublicKeyFactory.load(pubDir, pubFile);
-            } catch (Exception e) {
-                var cl = new PEMCertificateLoader(pubDir, pubFile);
-                cl.load();
-                if (cl.getCertificate() == null) {
-                    throw new IllegalArgumentException("Could not load a public key (neither key nor certificate).", e);
-                }
-                pub = cl.getCertificate().getPublicKey();
-            }
-
-            boolean ok;
-            if (payloadHashFile != null) {
-                byte[] providedDigest = loadPayloadHashFromFile(payloadHashFile, resolvedAlg);
-                ok = verifyJwsUsingProvidedDigest(providedDigest, sig, pub, resolvedAlg);
-            } else {
-                byte[] signingInput;
-                if (b64false) {
-                    if (payloadFile == null) {
-                        throw new IllegalArgumentException("b64=false requires --payload with RAW payload bytes.");
-                    }
-                    byte[] left = (protectedB64 + ".").getBytes(StandardCharsets.US_ASCII);
-                    byte[] raw = loadDetachedPayloadPossiblyCanonicalized();
-                    signingInput = concat(left, raw);
-                } else {
-                    if (detached) {
-                        if (payloadFile == null) {
-                            throw new IllegalArgumentException("detached requires --payload (for b64=true).");
-                        }
-                        byte[] raw = loadDetachedPayloadPossiblyCanonicalized();
-                        payloadB64 = Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
-                    } else {
-                        if (payloadB64 == null) {
-                            throw new IllegalArgumentException("Embedded signature expects a 'payload' in the JWS.");
-                        }
-                    }
-                    signingInput = (protectedB64 + "." + payloadB64).getBytes(StandardCharsets.US_ASCII);
-                }
-
-                ok = verifyJws(signingInput, sig, pub, resolvedAlg);
-            }
-
-            System.out.println("VALID (crypto-only): " + ok);
-            System.out.println(ok ? "FINAL RESULT: JWS IS VALID" : "FINAL RESULT: JWS IS NOT VALID");
 
         } catch (Exception e) {
             e.printStackTrace();
@@ -227,7 +112,248 @@ public class VerifyCmd implements Runnable {
         }
     }
 
-    /* ====================== DSS / eIDAS ====================== */
+    /* ====================== MIXED MODE ====================== */
+
+    private void verifyMixed(String content) throws Exception {
+        if (truststorePath == null) {
+            throw new IllegalArgumentException("--truststore is required for --mode mixed.");
+        }
+        if (truststorePassword == null) {
+            throw new IllegalArgumentException("--truststorePassword is required for --mode mixed.");
+        }
+        if (pubDir == null || pubFile == null) {
+            throw new IllegalArgumentException("mixed mode requires --pub-dir and --pub-file for the crypto part.");
+        }
+
+        boolean cryptoOk = verifyCrypto(content);
+        System.out.println("MIXED CRYPTO RESULT: " + (cryptoOk ? "OK" : "NOT OK"));
+
+        boolean certOk;
+        if (payloadFile != null) {
+            Reports documentReports = buildDssDocumentReports(content, true);
+            certOk = deriveMixedDssCertificateResult(documentReports, content);
+        } else {
+            System.out.println("INFO: Mixed mode with --payloadHashFile and without --payload skips document-based DSS signature analysis.");
+            X509Certificate signingCert = extractLeafCertificateFromInput(content);
+            certOk = verifyCertificateOnlyWithDss(signingCert);
+        }
+
+        System.out.println("MIXED DSS CERT RESULT: " + (certOk ? "OK" : "NOT OK"));
+
+        boolean finalOk = cryptoOk && certOk;
+        System.out.println(finalOk ? "FINAL RESULT: JWS IS VALID" : "FINAL RESULT: JWS IS NOT VALID");
+    }
+
+    private boolean deriveMixedDssCertificateResult(Reports reports, String content) throws Exception {
+        TriState docBased = deriveDocumentBasedCertificateTriState(reports);
+        if (docBased != TriState.UNKNOWN) {
+            return docBased == TriState.TRUE;
+        }
+
+        System.out.println("INFO: Mixed DSS document-based certificate result is UNKNOWN. Falling back to focused DSS certificate validation.");
+
+        X509Certificate signingCert = extractLeafCertificateFromInput(content);
+        return verifyCertificateOnlyWithDss(signingCert);
+    }
+
+    private TriState deriveDocumentBasedCertificateTriState(Reports reports) {
+        if (reports == null || reports.getSimpleReport() == null) {
+            return TriState.UNKNOWN;
+        }
+
+        List<String> ids = extractSignatureIdsFromSimpleReport(reports);
+        if (ids.isEmpty()) {
+            return TriState.UNKNOWN;
+        }
+
+        String detailedXml = safeToString(reports.getDetailedReport());
+        Object simpleReport = reports.getSimpleReport();
+
+        TriState certAll = TriState.TRUE;
+
+        for (String id : ids) {
+            DssIndicationInfo info = extractDetailedIndicationInfo(detailedXml, id);
+
+            TriState cert = classifyCert(info);
+
+            if (cert == TriState.UNKNOWN) {
+                cert = firstKnownTriState(simpleReport, id,
+                        "isSigningCertificateValid",
+                        "isSigningCertificateTrusted",
+                        "isCertificateValid",
+                        "isTrustAnchorValid",
+                        "isTrustChainValid");
+            }
+
+            if (cert == TriState.UNKNOWN) {
+                String indication = info.indication;
+                if (indication == null) {
+                    indication = invokeStringMethod(simpleReport, "getIndication", id);
+                }
+                String upperInd = upper(indication);
+                if ("TOTAL_PASSED".equals(upperInd) || "PASSED".equals(upperInd)) {
+                    cert = TriState.TRUE;
+                }
+            }
+
+            certAll = mergeTriStateAnd(certAll, cert);
+        }
+
+        return certAll;
+    }
+
+    private boolean verifyCertificateOnlyWithDss(X509Certificate signingCert) throws Exception {
+        CertificateToken token = new CertificateToken(signingCert);
+
+        CommonCertificateVerifier verifier = buildCertificateVerifierFromTruststore();
+
+        CertificateValidator validator = CertificateValidator.fromCertificate(token);
+        validator.setCertificateVerifier(verifier);
+        validator.setTokenExtractionStrategy(TokenExtractionStrategy.EXTRACT_CERTIFICATES_AND_REVOCATION_DATA);
+
+        CertificateReports reports = validator.validate();
+
+        DiagnosticData diagnosticData = reports.getDiagnosticData();
+        DetailedReport detailedReport = reports.getDetailedReport();
+        SimpleCertificateReport simpleReport = reports.getSimpleReport();
+
+        System.out.println("MIXED DSS CERT FALLBACK finished.");
+        System.out.println("Certificate diagnostic data available: " + (diagnosticData != null));
+        System.out.println("Certificate detailed report available: " + (detailedReport != null));
+        System.out.println("Certificate simple report available: " + (simpleReport != null));
+
+        Boolean reflected = invokeBooleanNoArg(simpleReport, "isValid");
+        if (Boolean.TRUE.equals(reflected)) {
+            return true;
+        }
+
+        String detailedText = detailedReport != null ? String.valueOf(detailedReport) : null;
+        String indication = firstGroup(detailedText, "(?s)<Indication>(.*?)</Indication>");
+        String subIndication = firstGroup(detailedText, "(?s)<SubIndication>(.*?)</SubIndication>");
+
+        if (indication != null) {
+            System.out.println("MIXED DSS CERT FALLBACK INDICATION: " + indication);
+        }
+        if (subIndication != null) {
+            System.out.println("MIXED DSS CERT FALLBACK SUB-INDICATION: " + subIndication);
+        }
+
+        String upperInd = upper(indication);
+        String upperSub = upper(subIndication);
+
+        if ("TOTAL_PASSED".equals(upperInd) || "PASSED".equals(upperInd)) {
+            return true;
+        }
+
+        if (containsAny(upperSub,
+                "NO_CERTIFICATE_CHAIN_FOUND",
+                "CERTIFICATE_CHAIN_GENERAL_FAILURE",
+                "REVOKED",
+                "EXPIRED",
+                "NOT_YET_VALID",
+                "OUT_OF_BOUNDS_NO_POE",
+                "OUT_OF_BOUNDS_NOT_REVOKED",
+                "TRY_LATER",
+                "REVOCATION_OUT_OF_BOUNDS_NO_POE",
+                "REVOCATION_OUT_OF_BOUNDS_NOT_REVOKED",
+                "CHAIN_CONSTRAINTS_FAILURE")) {
+            return false;
+        }
+
+        if (Boolean.FALSE.equals(reflected)) {
+            return false;
+        }
+
+        System.out.println("INFO: No negative DSS certificate/trust indication detected in fallback. Treating certificate check as OK.");
+        return true;
+    }
+
+    /* ====================== CRYPTO MODE ====================== */
+
+    private boolean verifyCrypto(String content) throws Exception {
+        if (payloadFile != null && payloadHashFile != null) {
+            throw new IllegalArgumentException("In crypto or mixed mode, use either --payload OR --payloadHashFile, not both.");
+        }
+
+        String protectedB64;
+        String payloadB64 = null;
+        String signatureB64;
+
+        if (isJsonSerialization(content)) {
+            protectedB64 = extractJsonValue(content, "\"protected\"");
+            signatureB64 = extractJsonValue(content, "\"signature\"");
+            if (content.contains("\"payload\"")) {
+                payloadB64 = extractJsonValue(content, "\"payload\"");
+            }
+        } else {
+            String[] parts = content.split("\\.", -1);
+            if (parts.length != 3) {
+                throw new IllegalArgumentException("Invalid compact JWS (expected 3 parts).");
+            }
+            protectedB64 = parts[0];
+            payloadB64 = parts[1];
+            signatureB64 = parts[2];
+        }
+
+        byte[] protectedJson = Base64.getUrlDecoder().decode(protectedB64);
+        String protectedStr = new String(protectedJson, StandardCharsets.UTF_8);
+        boolean b64false = protectedStr.contains("\"b64\":false");
+
+        String resolvedAlg = alg;
+        if ("ph".equalsIgnoreCase(alg)) {
+            String headerAlg = extractJsonValue(protectedStr, "\"alg\"");
+            if (headerAlg == null || headerAlg.isEmpty()) {
+                throw new IllegalArgumentException("Protected header does not contain an 'alg' claim.");
+            }
+            resolvedAlg = headerAlg;
+        }
+
+        byte[] sig = Base64.getUrlDecoder().decode(signatureB64);
+
+        PublicKey pub;
+        try {
+            pub = PublicKeyFactory.load(pubDir, pubFile);
+        } catch (Exception e) {
+            var cl = new PEMCertificateLoader(pubDir, pubFile);
+            cl.load();
+            if (cl.getCertificate() == null) {
+                throw new IllegalArgumentException("Could not load a public key (neither key nor certificate).", e);
+            }
+            pub = cl.getCertificate().getPublicKey();
+        }
+
+        if (payloadHashFile != null) {
+            byte[] providedDigest = loadPayloadHashFromFile(payloadHashFile, resolvedAlg);
+            return verifyJwsUsingProvidedDigest(providedDigest, sig, pub, resolvedAlg);
+        }
+
+        byte[] signingInput;
+        if (b64false) {
+            if (payloadFile == null) {
+                throw new IllegalArgumentException("b64=false requires --payload with RAW payload bytes.");
+            }
+            byte[] left = (protectedB64 + ".").getBytes(StandardCharsets.US_ASCII);
+            byte[] raw = loadDetachedPayloadPossiblyCanonicalized();
+            signingInput = concat(left, raw);
+        } else {
+            if (detached) {
+                if (payloadFile == null) {
+                    throw new IllegalArgumentException("detached requires --payload (for b64=true).");
+                }
+                byte[] raw = loadDetachedPayloadPossiblyCanonicalized();
+                payloadB64 = Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
+            } else {
+                if (payloadB64 == null) {
+                    throw new IllegalArgumentException("Embedded signature expects a 'payload' in the JWS.");
+                }
+            }
+            signingInput = (protectedB64 + "." + payloadB64).getBytes(StandardCharsets.US_ASCII);
+        }
+
+        return verifyJws(signingInput, sig, pub, resolvedAlg);
+    }
+
+    /* ====================== DSS / eIDAS FULL ====================== */
 
     private void verifyWithDss(String content) throws Exception {
         if (truststorePath == null) {
@@ -241,6 +367,20 @@ public class VerifyCmd implements Runnable {
             System.out.println("INFO: --pub-dir / --pub-file are ignored in DSS/eIDAS mode. DSS uses truststore + validation policy.");
         }
 
+        Reports reports = buildDssDocumentReports(content, true);
+
+        System.out.println("Validation process finished.");
+        System.out.println("Simple report object available: " + (reports.getSimpleReport() != null));
+        System.out.println("Detailed report object available: " + (reports.getDetailedReport() != null));
+        System.out.println("Diagnostic data available: " + (reports.getDiagnosticData() != null));
+
+        printDssResultSummary(reports);
+
+        boolean overallValid = isDssValidationSuccessful(reports);
+        System.out.println(overallValid ? "FINAL RESULT: JWS IS VALID" : "FINAL RESULT: JWS IS NOT VALID");
+    }
+
+    private Reports buildDssDocumentReports(String content, boolean printPolicyInfo) throws Exception {
         String jsonForDss = toJoseJsonForDss(content);
 
         DSSDocument sigDoc = new InMemoryDocument(
@@ -249,24 +389,7 @@ public class VerifyCmd implements Runnable {
                 MimeTypeEnum.JOSE_JSON
         );
 
-        KeyStore trustStore = KeyStore.getInstance(truststoreType);
-        try (InputStream is = Files.newInputStream(truststorePath)) {
-            trustStore.load(is, truststorePassword.toCharArray());
-        }
-
-        CommonTrustedCertificateSource trustedSource = new CommonTrustedCertificateSource();
-
-        Enumeration<String> aliases = trustStore.aliases();
-        while (aliases.hasMoreElements()) {
-            String alias = aliases.nextElement();
-            java.security.cert.Certificate cert = trustStore.getCertificate(alias);
-            if (cert instanceof X509Certificate x509) {
-                trustedSource.addCertificate(new CertificateToken(x509));
-            }
-        }
-
-        CommonCertificateVerifier verifier = new CommonCertificateVerifier();
-        verifier.setTrustedCertSources(trustedSource);
+        CommonCertificateVerifier verifier = buildCertificateVerifierFromTruststore();
 
         SignedDocumentValidator validator = SignedDocumentValidator.fromDocument(sigDoc);
         validator.setCertificateVerifier(verifier);
@@ -285,22 +408,66 @@ public class VerifyCmd implements Runnable {
                 throw new IllegalArgumentException("Validation policy file not found: " + validationPolicyFile);
             }
             reports = validator.validateDocument(validationPolicyFile.toFile());
-            System.out.println("Using custom validation policy: " + validationPolicyFile.toAbsolutePath());
+            if (printPolicyInfo) {
+                System.out.println("Using custom validation policy: " + validationPolicyFile.toAbsolutePath());
+            }
         } else {
             reports = validator.validateDocument((File) null);
-            System.out.println("Using DSS default validation policy.");
+            if (printPolicyInfo) {
+                System.out.println("Using DSS default validation policy.");
+            }
+        }
+        return reports;
+    }
+
+    /* ====================== DSS verifier / truststore helpers ====================== */
+
+    private CommonCertificateVerifier buildCertificateVerifierFromTruststore() throws Exception {
+        KeyStore trustStore = KeyStore.getInstance(truststoreType);
+        try (InputStream is = Files.newInputStream(truststorePath)) {
+            trustStore.load(is, truststorePassword.toCharArray());
         }
 
-        System.out.println("Validation process finished.");
-        System.out.println("Simple report object available: " + (reports.getSimpleReport() != null));
-        System.out.println("Detailed report object available: " + (reports.getDetailedReport() != null));
-        System.out.println("Diagnostic data available: " + (reports.getDiagnosticData() != null));
+        CommonTrustedCertificateSource trustedSource = new CommonTrustedCertificateSource();
+        Enumeration<String> aliases = trustStore.aliases();
+        while (aliases.hasMoreElements()) {
+            String alias = aliases.nextElement();
+            java.security.cert.Certificate cert = trustStore.getCertificate(alias);
+            if (cert instanceof X509Certificate x509) {
+                trustedSource.addCertificate(new CertificateToken(x509));
+            }
+        }
 
-        printDssResultSummary(reports);
-
-        boolean overallValid = isDssValidationSuccessful(reports);
-        System.out.println(overallValid ? "FINAL RESULT: JWS IS VALID" : "FINAL RESULT: JWS IS NOT VALID");
+        CommonCertificateVerifier verifier = new CommonCertificateVerifier();
+        verifier.setTrustedCertSources(trustedSource);
+        return verifier;
     }
+
+    private X509Certificate extractLeafCertificateFromInput(String content) throws Exception {
+        String protectedB64;
+
+        if (isJsonSerialization(content)) {
+            protectedB64 = extractJsonValue(content, "\"protected\"");
+        } else {
+            String[] parts = content.split("\\.", -1);
+            if (parts.length != 3) {
+                throw new IllegalArgumentException("Invalid compact JWS (expected 3 parts).");
+            }
+            protectedB64 = parts[0];
+        }
+
+        String protectedJson = new String(Base64.getUrlDecoder().decode(protectedB64), StandardCharsets.UTF_8);
+        String leafCertDerB64 = extractFirstStringFromJsonArray(protectedJson, "\"x5c\"");
+        if (leafCertDerB64 == null) {
+            throw new IllegalArgumentException("Missing x5c[0] in protected header. Mixed mode DSS certificate validation requires x5c.");
+        }
+
+        byte[] certDer = Base64.getDecoder().decode(leafCertDerB64);
+        CertificateFactory cf = CertificateFactory.getInstance("X.509");
+        return (X509Certificate) cf.generateCertificate(new ByteArrayInputStream(certDer));
+    }
+
+    /* ====================== DSS report helpers ====================== */
 
     private static void printDssResultSummary(Reports reports) {
         List<String> ids = extractSignatureIdsFromSimpleReport(reports);
@@ -364,8 +531,6 @@ public class VerifyCmd implements Runnable {
         System.out.println("DSS PROFILE : " + triStateToText(profileAll));
     }
 
-    /* ====================== DSS helpers ====================== */
-
     private enum TriState {
         TRUE, FALSE, UNKNOWN
     }
@@ -385,9 +550,7 @@ public class VerifyCmd implements Runnable {
         String ind = upper(info.indication);
         String sub = upper(info.subIndication);
 
-        if ("TOTAL_PASSED".equals(ind) || "PASSED".equals(ind)) {
-            return TriState.TRUE;
-        }
+        if ("TOTAL_PASSED".equals(ind) || "PASSED".equals(ind)) return TriState.TRUE;
 
         if (containsAny(sub,
                 "HASH_FAILURE",
@@ -415,9 +578,7 @@ public class VerifyCmd implements Runnable {
         String ind = upper(info.indication);
         String sub = upper(info.subIndication);
 
-        if ("TOTAL_PASSED".equals(ind) || "PASSED".equals(ind)) {
-            return TriState.TRUE;
-        }
+        if ("TOTAL_PASSED".equals(ind) || "PASSED".equals(ind)) return TriState.TRUE;
 
         if (containsAny(sub,
                 "NO_CERTIFICATE_CHAIN_FOUND",
@@ -450,9 +611,7 @@ public class VerifyCmd implements Runnable {
         String ind = upper(info.indication);
         String sub = upper(info.subIndication);
 
-        if ("TOTAL_PASSED".equals(ind) || "PASSED".equals(ind)) {
-            return TriState.TRUE;
-        }
+        if ("TOTAL_PASSED".equals(ind) || "PASSED".equals(ind)) return TriState.TRUE;
 
         if (containsAny(sub,
                 "FORMAT_FAILURE",
@@ -473,13 +632,25 @@ public class VerifyCmd implements Runnable {
         return TriState.UNKNOWN;
     }
 
+    private static TriState firstKnownTriState(Object target, String signatureId, String... methodNames) {
+        if (target == null) return TriState.UNKNOWN;
+
+        for (String methodName : methodNames) {
+            try {
+                Method m = target.getClass().getMethod(methodName, String.class);
+                Object result = m.invoke(target, signatureId);
+                if (result instanceof Boolean b) {
+                    return b ? TriState.TRUE : TriState.FALSE;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return TriState.UNKNOWN;
+    }
+
     private static TriState mergeTriStateAnd(TriState a, TriState b) {
-        if (a == TriState.FALSE || b == TriState.FALSE) {
-            return TriState.FALSE;
-        }
-        if (a == TriState.UNKNOWN || b == TriState.UNKNOWN) {
-            return TriState.UNKNOWN;
-        }
+        if (a == TriState.FALSE || b == TriState.FALSE) return TriState.FALSE;
+        if (a == TriState.UNKNOWN || b == TriState.UNKNOWN) return TriState.UNKNOWN;
         return TriState.TRUE;
     }
 
@@ -533,17 +704,24 @@ public class VerifyCmd implements Runnable {
         if (input == null) return null;
         for (String regex : regexes) {
             Matcher m = Pattern.compile(regex).matcher(input);
-            if (m.find()) {
-                return m.group(1);
-            }
+            if (m.find()) return m.group(1);
         }
         return null;
     }
 
-    private static boolean invokeBooleanMethod(Object target, String methodName, String signatureId, boolean fallback) {
-        if (target == null) {
-            return fallback;
+    private static Boolean invokeBooleanNoArg(Object target, String methodName) {
+        if (target == null) return null;
+        try {
+            Method m = target.getClass().getMethod(methodName);
+            Object result = m.invoke(target);
+            return (result instanceof Boolean b) ? b : null;
+        } catch (Exception e) {
+            return null;
         }
+    }
+
+    private static boolean invokeBooleanMethod(Object target, String methodName, String signatureId, boolean fallback) {
+        if (target == null) return fallback;
         try {
             Method m = target.getClass().getMethod(methodName, String.class);
             Object result = m.invoke(target, signatureId);
@@ -554,9 +732,7 @@ public class VerifyCmd implements Runnable {
     }
 
     private static String invokeStringMethod(Object target, String methodName, String signatureId) {
-        if (target == null) {
-            return null;
-        }
+        if (target == null) return null;
         try {
             Method m = target.getClass().getMethod(methodName, String.class);
             Object result = m.invoke(target, signatureId);
@@ -568,9 +744,7 @@ public class VerifyCmd implements Runnable {
 
     private static List<String> extractSignatureIdsFromSimpleReport(Reports reports) {
         List<String> ids = new ArrayList<>();
-        if (reports == null || reports.getSimpleReport() == null) {
-            return ids;
-        }
+        if (reports == null || reports.getSimpleReport() == null) return ids;
 
         Object simpleReport = reports.getSimpleReport();
 
@@ -579,23 +753,17 @@ public class VerifyCmd implements Runnable {
             Object idsObj = getSignatureIdList.invoke(simpleReport);
             if (idsObj instanceof Iterable<?> iterable) {
                 for (Object o : iterable) {
-                    if (o != null) {
-                        ids.add(String.valueOf(o));
-                    }
+                    if (o != null) ids.add(String.valueOf(o));
                 }
             }
-            if (!ids.isEmpty()) {
-                return ids;
-            }
+            if (!ids.isEmpty()) return ids;
         } catch (Exception ignored) {
         }
 
         try {
             Method getFirstSignatureId = simpleReport.getClass().getMethod("getFirstSignatureId");
             Object firstId = getFirstSignatureId.invoke(simpleReport);
-            if (firstId != null) {
-                ids.add(String.valueOf(firstId));
-            }
+            if (firstId != null) ids.add(String.valueOf(firstId));
         } catch (Exception ignored) {
         }
 
@@ -604,15 +772,11 @@ public class VerifyCmd implements Runnable {
 
     private static boolean isDssValidationSuccessful(Reports reports) {
         List<String> ids = extractSignatureIdsFromSimpleReport(reports);
-        if (ids.isEmpty()) {
-            return false;
-        }
+        if (ids.isEmpty()) return false;
 
         Object simpleReport = reports.getSimpleReport();
         for (String id : ids) {
-            if (!invokeBooleanMethod(simpleReport, "isValid", id, false)) {
-                return false;
-            }
+            if (!invokeBooleanMethod(simpleReport, "isValid", id, false)) return false;
         }
         return true;
     }
@@ -650,12 +814,8 @@ public class VerifyCmd implements Runnable {
                 v.initVerify(pub);
                 v.update(providedDigest);
 
-                if (looksLikeRawConcat) {
-                    return v.verify(concatToDer(sig, fieldSize));
-                }
-                if (looksLikeDer) {
-                    return v.verify(sig);
-                }
+                if (looksLikeRawConcat) return v.verify(concatToDer(sig, fieldSize));
+                if (looksLikeDer) return v.verify(sig);
 
                 throw new IllegalArgumentException("Unsupported ECDSA signature encoding (neither raw R||S nor DER).");
             }
@@ -734,7 +894,8 @@ public class VerifyCmd implements Runnable {
         };
 
         if (digest.length != expectedLen) {
-            throw new IllegalArgumentException("Unexpected hash length in --payloadHashFile for " + alg + ". Expected " + expectedLen + " bytes, got " + digest.length + ".");
+            throw new IllegalArgumentException("Unexpected hash length in --payloadHashFile for " + alg +
+                    ". Expected " + expectedLen + " bytes, got " + digest.length + ".");
         }
 
         return digest;
@@ -770,12 +931,6 @@ public class VerifyCmd implements Runnable {
         if (digest == null || digest.length != 64) {
             throw new IllegalArgumentException("SHA-512 digest must be 64 bytes.");
         }
-        // DER for: DigestInfo ::= SEQUENCE { AlgorithmIdentifier id-sha512, OCTET STRING digest }
-        // 30 51
-        //   30 0d
-        //     06 09 60 86 48 01 65 03 04 02 03
-        //     05 00
-        //   04 40 || digest
         byte[] prefix = new byte[] {
                 0x30, 0x51,
                 0x30, 0x0d,
@@ -816,6 +971,25 @@ public class VerifyCmd implements Runnable {
         if (colon < 0 || q1 < 0 || q2 < 0) {
             throw new IllegalArgumentException("Malformed JSON near " + keyWithQuotes);
         }
+        return json.substring(q1 + 1, q2);
+    }
+
+    private static String extractFirstStringFromJsonArray(String json, String keyWithQuotes) {
+        int k = json.indexOf(keyWithQuotes);
+        if (k < 0) return null;
+
+        int colon = json.indexOf(':', k);
+        if (colon < 0) return null;
+
+        int arrStart = json.indexOf('[', colon);
+        if (arrStart < 0) return null;
+
+        int q1 = json.indexOf('"', arrStart);
+        if (q1 < 0) return null;
+
+        int q2 = json.indexOf('"', q1 + 1);
+        if (q2 < 0) return null;
+
         return json.substring(q1 + 1, q2);
     }
 
