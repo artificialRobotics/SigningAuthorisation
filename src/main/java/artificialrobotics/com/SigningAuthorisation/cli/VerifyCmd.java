@@ -332,19 +332,46 @@ public class VerifyCmd implements Runnable {
         debug("crypto signature bytes", String.valueOf(sig.length));
         debug("crypto signature b64url prefix", abbreviate(signatureB64, 120));
 
+        X509Certificate externalCert = null;
         PublicKey pub;
         try {
             pub = PublicKeyFactory.load(pubDir, pubFile);
+            debug("crypto public key source", "PublicKeyFactory");
         } catch (Exception e) {
             var cl = new PEMCertificateLoader(pubDir, pubFile);
             cl.load();
             if (cl.getCertificate() == null) {
                 throw new IllegalArgumentException("Could not load a public key (neither key nor certificate).", e);
             }
-            pub = cl.getCertificate().getPublicKey();
+            externalCert = cl.getCertificate();
+            pub = externalCert.getPublicKey();
+            debug("crypto public key source", "certificate");
         }
 
         debug("crypto public key algorithm", pub.getAlgorithm());
+
+        X509Certificate x5cLeaf = tryExtractLeafCertificateFromProtectedJson(protectedStr);
+        if (debug) {
+            if (externalCert != null) {
+                debugCertificate("external cert (--pub-file)", externalCert);
+            } else {
+                debug("external cert (--pub-file)", "not available as certificate object");
+            }
+
+            if (x5cLeaf != null) {
+                debugCertificate("x5c[0] cert", x5cLeaf);
+            } else {
+                debug("x5c[0] cert", "not present in protected header");
+            }
+
+            if (externalCert != null && x5cLeaf != null) {
+                debug("pub-file cert equals x5c cert", String.valueOf(externalCert.equals(x5cLeaf)));
+                debug("pub-file public key equals x5c public key",
+                        String.valueOf(MessageDigest.isEqual(
+                                externalCert.getPublicKey().getEncoded(),
+                                x5cLeaf.getPublicKey().getEncoded())));
+            }
+        }
 
         if (payloadHashFile != null) {
             byte[] providedDigest = loadPayloadHashFromFile(payloadHashFile, resolvedAlg);
@@ -515,6 +542,21 @@ public class VerifyCmd implements Runnable {
         debug("leaf cert issuer", cert.getIssuerX500Principal().getName());
         debug("leaf cert serial", cert.getSerialNumber().toString(16));
         return cert;
+    }
+
+    private X509Certificate tryExtractLeafCertificateFromProtectedJson(String protectedJson) {
+        try {
+            String leafCertDerB64 = extractFirstStringFromJsonArray(protectedJson, "\"x5c\"");
+            if (leafCertDerB64 == null) {
+                return null;
+            }
+            byte[] certDer = Base64.getDecoder().decode(leafCertDerB64);
+            CertificateFactory cf = CertificateFactory.getInstance("X.509");
+            return (X509Certificate) cf.generateCertificate(new ByteArrayInputStream(certDer));
+        } catch (Exception e) {
+            debug("x5c extraction error", e.getMessage());
+            return null;
+        }
     }
 
     /* ====================== DSS report helpers ====================== */
@@ -1212,8 +1254,22 @@ public class VerifyCmd implements Runnable {
         debug(label + " first16 hex", toHexPrefix(payload, 16));
     }
 
+    private void debugCertificate(String label, X509Certificate cert) throws Exception {
+        if (!debug || cert == null) return;
+        debug(label + " subject", cert.getSubjectX500Principal().getName());
+        debug(label + " issuer", cert.getIssuerX500Principal().getName());
+        debug(label + " serial", cert.getSerialNumber().toString(16));
+        debug(label + " cert sha256", sha256Base64(cert.getEncoded()));
+        debug(label + " pubkey sha256", sha256Base64(cert.getPublicKey().getEncoded()));
+    }
+
     private static String sha512Base64(byte[] data) throws Exception {
         byte[] digest = MessageDigest.getInstance("SHA-512").digest(data);
+        return Base64.getEncoder().encodeToString(digest);
+    }
+
+    private static String sha256Base64(byte[] data) throws Exception {
+        byte[] digest = MessageDigest.getInstance("SHA-256").digest(data);
         return Base64.getEncoder().encodeToString(digest);
     }
 
