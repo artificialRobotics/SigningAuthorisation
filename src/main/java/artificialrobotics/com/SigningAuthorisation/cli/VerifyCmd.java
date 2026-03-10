@@ -88,12 +88,18 @@ public class VerifyCmd implements Runnable {
     @CommandLine.Option(names = "--validationPolicy", description = "Custom DSS validation policy XML file. If omitted, DSS default policy is used.")
     Path validationPolicyFile;
 
+    @CommandLine.Option(names = "--debug", description = "Print additional debug information.")
+    boolean debug;
+
     @Override
     public void run() {
         try {
             new InitBC();
 
             final String content = Files.readString(inFile, StandardCharsets.UTF_8).trim();
+            debug("mode", mode);
+            debug("input file", String.valueOf(inFile.toAbsolutePath()));
+            debug("input length", String.valueOf(content.length()));
 
             switch (mode.toLowerCase()) {
                 case "crypto" -> {
@@ -125,14 +131,17 @@ public class VerifyCmd implements Runnable {
             throw new IllegalArgumentException("mixed mode requires --pub-dir and --pub-file for the crypto part.");
         }
 
+        debug("mixed", "starting crypto part");
         boolean cryptoOk = verifyCrypto(content);
         System.out.println("MIXED CRYPTO RESULT: " + (cryptoOk ? "OK" : "NOT OK"));
 
         boolean certOk;
         if (payloadFile != null) {
+            debug("mixed", "payload present -> using document-based DSS certificate derivation");
             Reports documentReports = buildDssDocumentReports(content, true);
             certOk = deriveMixedDssCertificateResult(documentReports, content);
         } else {
+            debug("mixed", "payload absent -> using certificate-only DSS fallback directly");
             System.out.println("INFO: Mixed mode with --payloadHashFile and without --payload skips document-based DSS signature analysis.");
             X509Certificate signingCert = extractLeafCertificateFromInput(content);
             certOk = verifyCertificateOnlyWithDss(signingCert);
@@ -146,6 +155,8 @@ public class VerifyCmd implements Runnable {
 
     private boolean deriveMixedDssCertificateResult(Reports reports, String content) throws Exception {
         TriState docBased = deriveDocumentBasedCertificateTriState(reports);
+        debug("mixed document-based cert tristate", String.valueOf(docBased));
+
         if (docBased != TriState.UNKNOWN) {
             return docBased == TriState.TRUE;
         }
@@ -173,7 +184,6 @@ public class VerifyCmd implements Runnable {
 
         for (String id : ids) {
             DssIndicationInfo info = extractDetailedIndicationInfo(detailedXml, id);
-
             TriState cert = classifyCert(info);
 
             if (cert == TriState.UNKNOWN) {
@@ -196,6 +206,8 @@ public class VerifyCmd implements Runnable {
                 }
             }
 
+            debug("mixed signature id", id);
+            debug("mixed cert tristate for signature", String.valueOf(cert));
             certAll = mergeTriStateAnd(certAll, cert);
         }
 
@@ -223,6 +235,7 @@ public class VerifyCmd implements Runnable {
         System.out.println("Certificate simple report available: " + (simpleReport != null));
 
         Boolean reflected = invokeBooleanNoArg(simpleReport, "isValid");
+        debug("mixed cert fallback reflected isValid()", String.valueOf(reflected));
         if (Boolean.TRUE.equals(reflected)) {
             return true;
         }
@@ -310,6 +323,15 @@ public class VerifyCmd implements Runnable {
 
         byte[] sig = Base64.getUrlDecoder().decode(signatureB64);
 
+        debug("crypto alg (requested)", alg);
+        debug("crypto alg (resolved)", resolvedAlg);
+        debug("crypto detached", String.valueOf(detached));
+        debug("crypto b64=false", String.valueOf(b64false));
+        debug("crypto protected.b64url", protectedB64);
+        debugMultiline("crypto protected.json", protectedStr);
+        debug("crypto signature bytes", String.valueOf(sig.length));
+        debug("crypto signature b64url prefix", abbreviate(signatureB64, 120));
+
         PublicKey pub;
         try {
             pub = PublicKeyFactory.load(pubDir, pubFile);
@@ -322,8 +344,13 @@ public class VerifyCmd implements Runnable {
             pub = cl.getCertificate().getPublicKey();
         }
 
+        debug("crypto public key algorithm", pub.getAlgorithm());
+
         if (payloadHashFile != null) {
             byte[] providedDigest = loadPayloadHashFromFile(payloadHashFile, resolvedAlg);
+            debug("crypto mode detail", "using --payloadHashFile");
+            debug("crypto provided digest bytes", String.valueOf(providedDigest.length));
+            debug("crypto provided digest b64", Base64.getEncoder().encodeToString(providedDigest));
             return verifyJwsUsingProvidedDigest(providedDigest, sig, pub, resolvedAlg);
         }
 
@@ -334,6 +361,7 @@ public class VerifyCmd implements Runnable {
             }
             byte[] left = (protectedB64 + ".").getBytes(StandardCharsets.US_ASCII);
             byte[] raw = loadDetachedPayloadPossiblyCanonicalized();
+            debugPayload(raw, "crypto raw payload");
             signingInput = concat(left, raw);
         } else {
             if (detached) {
@@ -341,14 +369,21 @@ public class VerifyCmd implements Runnable {
                     throw new IllegalArgumentException("detached requires --payload (for b64=true).");
                 }
                 byte[] raw = loadDetachedPayloadPossiblyCanonicalized();
+                debugPayload(raw, "crypto detached payload");
                 payloadB64 = Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
             } else {
                 if (payloadB64 == null) {
                     throw new IllegalArgumentException("Embedded signature expects a 'payload' in the JWS.");
                 }
+                debug("crypto embedded payload b64url", abbreviate(payloadB64, 160));
             }
             signingInput = (protectedB64 + "." + payloadB64).getBytes(StandardCharsets.US_ASCII);
+            debug("crypto payloadB64", abbreviate(payloadB64, 160));
         }
+
+        debug("crypto signingInput bytes", String.valueOf(signingInput.length));
+        debug("crypto signingInput sha512 b64", sha512Base64(signingInput));
+        debug("crypto signingInput preview", abbreviate(new String(signingInput, StandardCharsets.US_ASCII), 180));
 
         return verifyJws(signingInput, sig, pub, resolvedAlg);
     }
@@ -383,6 +418,9 @@ public class VerifyCmd implements Runnable {
     private Reports buildDssDocumentReports(String content, boolean printPolicyInfo) throws Exception {
         String jsonForDss = toJoseJsonForDss(content);
 
+        debug("dss jose json length", String.valueOf(jsonForDss.length()));
+        debugMultiline("dss jose json", jsonForDss);
+
         DSSDocument sigDoc = new InMemoryDocument(
                 jsonForDss.getBytes(StandardCharsets.UTF_8),
                 "sig.jws",
@@ -398,6 +436,7 @@ public class VerifyCmd implements Runnable {
             byte[] raw = loadDetachedPayloadPossiblyCanonicalized();
             validator.setDetachedContents(List.of(new InMemoryDocument(raw)));
             System.out.println("INFO: DSS detached content loaded from --payload.");
+            debugPayload(raw, "dss detached payload");
         } else {
             System.out.println("INFO: No detached payload provided to DSS.");
         }
@@ -430,13 +469,19 @@ public class VerifyCmd implements Runnable {
 
         CommonTrustedCertificateSource trustedSource = new CommonTrustedCertificateSource();
         Enumeration<String> aliases = trustStore.aliases();
+        int trustedCount = 0;
         while (aliases.hasMoreElements()) {
             String alias = aliases.nextElement();
             java.security.cert.Certificate cert = trustStore.getCertificate(alias);
             if (cert instanceof X509Certificate x509) {
                 trustedSource.addCertificate(new CertificateToken(x509));
+                trustedCount++;
             }
         }
+
+        debug("truststore path", String.valueOf(truststorePath.toAbsolutePath()));
+        debug("truststore type", truststoreType);
+        debug("truststore trusted certificates loaded", String.valueOf(trustedCount));
 
         CommonCertificateVerifier verifier = new CommonCertificateVerifier();
         verifier.setTrustedCertSources(trustedSource);
@@ -464,7 +509,12 @@ public class VerifyCmd implements Runnable {
 
         byte[] certDer = Base64.getDecoder().decode(leafCertDerB64);
         CertificateFactory cf = CertificateFactory.getInstance("X.509");
-        return (X509Certificate) cf.generateCertificate(new ByteArrayInputStream(certDer));
+        X509Certificate cert = (X509Certificate) cf.generateCertificate(new ByteArrayInputStream(certDer));
+
+        debug("leaf cert subject", cert.getSubjectX500Principal().getName());
+        debug("leaf cert issuer", cert.getIssuerX500Principal().getName());
+        debug("leaf cert serial", cert.getSerialNumber().toString(16));
+        return cert;
     }
 
     /* ====================== DSS report helpers ====================== */
@@ -1140,5 +1190,50 @@ public class VerifyCmd implements Runnable {
         }
 
         return out;
+    }
+
+    /* ====================== Debug helpers ====================== */
+
+    private void debug(String label, String value) {
+        if (!debug) return;
+        System.out.println("[DEBUG] " + label + ": " + value);
+    }
+
+    private void debugMultiline(String label, String value) {
+        if (!debug) return;
+        System.out.println("[DEBUG] " + label + ":");
+        System.out.println(value);
+    }
+
+    private void debugPayload(byte[] payload, String label) throws Exception {
+        if (!debug || payload == null) return;
+        debug(label + " bytes", String.valueOf(payload.length));
+        debug(label + " sha512 b64", sha512Base64(payload));
+        debug(label + " first16 hex", toHexPrefix(payload, 16));
+    }
+
+    private static String sha512Base64(byte[] data) throws Exception {
+        byte[] digest = MessageDigest.getInstance("SHA-512").digest(data);
+        return Base64.getEncoder().encodeToString(digest);
+    }
+
+    private static String toHexPrefix(byte[] data, int maxBytes) {
+        if (data == null) return "null";
+        int len = Math.min(data.length, maxBytes);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < len; i++) {
+            if (i > 0) sb.append(' ');
+            sb.append(String.format("%02x", data[i] & 0xff));
+        }
+        if (data.length > maxBytes) {
+            sb.append(" ...");
+        }
+        return sb.toString();
+    }
+
+    private static String abbreviate(String s, int maxLen) {
+        if (s == null) return "null";
+        if (s.length() <= maxLen) return s;
+        return s.substring(0, maxLen) + "...";
     }
 }
