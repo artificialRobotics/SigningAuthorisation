@@ -274,6 +274,7 @@ public class SignCmd implements Runnable {
             // (3) Build JWS Signing Input
             byte[] signingInputBytes;
             String payloadB64 = null;
+            byte[] payloadBytesForSigning;
             boolean headerB64False = Boolean.FALSE.equals(ph.asObjectMap().get("b64"));
 
             if (headerB64False) {
@@ -282,13 +283,15 @@ public class SignCmd implements Runnable {
                 }
                 byte[] left = (protectedB64 + ".").getBytes(StandardCharsets.US_ASCII);
                 signingInputBytes = concat(left, payloadEffective);
+                payloadBytesForSigning = payloadEffective;
             } else {
                 payloadB64 = Base64.getUrlEncoder().withoutPadding().encodeToString(payloadEffective);
                 signingInputBytes = (protectedB64 + "." + payloadB64).getBytes(StandardCharsets.US_ASCII);
+                payloadBytesForSigning = payloadB64.getBytes(StandardCharsets.US_ASCII); 
             }
 
             // (3b) Emit artifacts
-            writePayloadTextAndHashArtifacts(payloadEffective, signingInputBytes, outFile, alg);
+            writePayloadTextAndHashArtifacts(payloadEffective, payloadBytesForSigning,  signingInputBytes, outFile, alg);
 
             // (4) Load private key
             PrivateKey priv;
@@ -423,6 +426,7 @@ public class SignCmd implements Runnable {
     }
 
     private static void writePayloadTextAndHashArtifacts(byte[] payloadEffective,
+    													 byte[] payloadBytesForSigning,
                                                          byte[] signingInputBytes,
                                                          Path outFile,
                                                          String alg) throws Exception {
@@ -434,6 +438,7 @@ public class SignCmd implements Runnable {
 
         Path json4SigPath = baseDir.resolve("JSON4Signature" + outName + ".json");
         Path hash4SigPath = baseDir.resolve("HASH4Signature" + outName + ".txt");
+        Path hashPayload4SigPath = baseDir.resolve("HASHPayload" + outName + ".txt");
 
         CharsetDecoder dec = StandardCharsets.UTF_8.newDecoder()
                 .onMalformedInput(CodingErrorAction.REPLACE)
@@ -451,6 +456,11 @@ public class SignCmd implements Runnable {
         byte[] digest = md.digest(signingInputBytes);
         String digestB64 = Base64.getEncoder().encodeToString(digest);
         Files.writeString(hash4SigPath, digestB64 + System.lineSeparator(), StandardCharsets.UTF_8);
+        
+        md = MessageDigest.getInstance(digestAlg);
+        digest = md.digest(payloadBytesForSigning);
+        digestB64 = Base64.getEncoder().encodeToString(digest);
+        Files.writeString(hashPayload4SigPath, digestB64 + System.lineSeparator(), StandardCharsets.UTF_8);
     }
 
     private static byte[] computeSigningInputDigest(byte[] signingInputBytes, String alg) throws Exception {

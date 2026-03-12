@@ -4,9 +4,14 @@ C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artifi
 C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artificialrobotics\com\SigningAuthorisation\cli\App.java
 C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artificialrobotics\com\SigningAuthorisation\cli\EcdsaConcatToDer.java
 C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artificialrobotics\com\SigningAuthorisation\cli\EcdsaDer.java
+C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artificialrobotics\com\SigningAuthorisation\cli\JoseInputParser.java
 C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artificialrobotics\com\SigningAuthorisation\cli\package-info.java
+C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artificialrobotics\com\SigningAuthorisation\cli\ParsedJws.java
+C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artificialrobotics\com\SigningAuthorisation\cli\PayloadInputData.java
+C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artificialrobotics\com\SigningAuthorisation\cli\PayloadInputResolver.java
 C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artificialrobotics\com\SigningAuthorisation\cli\SignCmd.java
 C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artificialrobotics\com\SigningAuthorisation\cli\VerifyCmd.java
+C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artificialrobotics\com\SigningAuthorisation\cli\VerifyDebugSupport.java
 C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artificialrobotics\com\SigningAuthorisation\examples\ExampleSignBerlinGroup.java
 C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artificialrobotics\com\SigningAuthorisation\examples\ExampleVerifyBerlinGroup.java
 C:\Users\marti\Eclipse_Local_Workspace\SigningAuthorisation\src\main\java\artificialrobotics\com\SigningAuthorisation\examples\package-info.java

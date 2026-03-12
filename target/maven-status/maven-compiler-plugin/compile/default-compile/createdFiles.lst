@@ -1,14 +1,18 @@
 artificialrobotics\com\SigningAuthorisation\cli\App.class
 artificialrobotics\com\SigningAuthorisation\examples\ExampleVerifyBerlinGroup$BG.class
 artificialrobotics\com\SigningAuthorisation\jose\ProtectedHeader.class
+artificialrobotics\com\SigningAuthorisation\cli\ParsedJws.class
 artificialrobotics\com\SigningAuthorisation\json\RunVerifySignature.class
 artificialrobotics\com\SigningAuthorisation\cli\package-info.class
 artificialrobotics\com\SigningAuthorisation\certificates\PEMCertificateLoader.class
 artificialrobotics\com\SigningAuthorisation\signingKeys\RSAHexPrivateKeyLoader.class
+artificialrobotics\com\SigningAuthorisation\cli\VerifyDebugSupport.class
 artificialrobotics\com\SigningAuthorisation\examples\ExampleVerifyBerlinGroup$AlgoVerifier.class
 artificialrobotics\com\SigningAuthorisation\signingKeys\PrivateKeyFactory.class
+artificialrobotics\com\SigningAuthorisation\cli\PayloadInputResolver.class
 artificialrobotics\com\SigningAuthorisation\signingKeys\PrivateKeyLoader.class
 artificialrobotics\com\SigningAuthorisation\examples\package-info.class
+artificialrobotics\com\SigningAuthorisation\cli\JoseInputParser.class
 artificialrobotics\com\SigningAuthorisation\cli\VerifyCmd$TriState.class
 artificialrobotics\com\SigningAuthorisation\examples\ExampleVerifyBerlinGroup.class
 artificialrobotics\com\SigningAuthorisation\InitBC.class
@@ -33,6 +37,7 @@ artificialrobotics\com\SigningAuthorisation\examples\ExampleSignBerlinGroup$Sign
 artificialrobotics\com\SigningAuthorisation\json\JsonCanonicalizerJcs$Parser.class
 artificialrobotics\com\SigningAuthorisation\cli\SignCmd.class
 artificialrobotics\com\SigningAuthorisation\signingKeys\PEMPublicKeyLoader.class
+artificialrobotics\com\SigningAuthorisation\cli\PayloadInputData.class
 artificialrobotics\com\SigningAuthorisation\json\JsonCanonicalizerJcs.class
 artificialrobotics\com\SigningAuthorisation\signingKeys\PublicKeyLoader.class
 artificialrobotics\com\SigningAuthorisation\signingKeys\RSAXmlPrivateKeyLoader.class
