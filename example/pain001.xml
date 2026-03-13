@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.001.001.03" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="urn:iso:std:iso:20022:tech:xsd:pain.001.001.03 file:///C:/Users/cb2mehc/OneDrive%20-%20Commerzbank/HDriveMigrated/My%20Documents/Schema/ISO2009/pain.001.001.03.xsd">
+	<CstmrCdtTrfInitn>
+		<GrpHdr>
+			<MsgId>MSG-TF600</MsgId>
+			<CreDtTm>2025-04-14T15:51:21</CreDtTm>
+			<NbOfTxs>2</NbOfTxs>
+			<CtrlSum>4.25</CtrlSum>
+			<InitgPty>
+				<Nm>CP API GmbH</Nm>
+			</InitgPty>
+		</GrpHdr>
+		<PmtInf>
+			<PmtInfId>PmtInf-TF600-1</PmtInfId>
+			<PmtMtd>TRF</PmtMtd>
+			<BtchBookg>true</BtchBookg>
+			<NbOfTxs>2</NbOfTxs>
+			<PmtTpInf>
+				<SvcLvl>
+					<Cd>SEPA</Cd>
+				</SvcLvl>
+			</PmtTpInf>
+			<ReqdExctnDt>2025-04-14</ReqdExctnDt>
+			<Dbtr>
+				<Nm>CP API GmbH</Nm>
+			</Dbtr>
+			<DbtrAcct>
+				<Id>
+					<IBAN>DE73500400000470016700</IBAN>
+				</Id>
+			</DbtrAcct>
+			<DbtrAgt>
+				<FinInstnId>
+					<BIC>COBADEFFXXX</BIC>
+				</FinInstnId>
+			</DbtrAgt>
+			<ChrgBr>SLEV</ChrgBr>
+			<CdtTrfTxInf>
+				<PmtId>
+					<EndToEndId>E2E-TF600-1-1</EndToEndId>
+				</PmtId>
+				<Amt>
+					<InstdAmt Ccy="EUR">2.13</InstdAmt>
+				</Amt>
+				<CdtrAgt>
+					<FinInstnId>
+						<BIC>COBADEFFXXX</BIC>
+					</FinInstnId>
+				</CdtrAgt>
+				<Cdtr>
+					<Nm>Creditor Name</Nm>
+				</Cdtr>
+				<CdtrAcct>
+					<Id>
+						<IBAN>DE19500400000470016702</IBAN>
+					</Id>
+				</CdtrAcct>
+				<RmtInf>
+					<Ustrd>VWZ Testfall TF600-1-1</Ustrd>
+				</RmtInf>
+			</CdtTrfTxInf>
+			<CdtTrfTxInf>
+				<PmtId>
+					<EndToEndId>E2E-TF600-1-2</EndToEndId>
+				</PmtId>
+				<Amt>
+					<InstdAmt Ccy="EUR">2.12</InstdAmt>
+				</Amt>
+				<CdtrAgt>
+					<FinInstnId>
+						<BIC>COBAFRPXXXX</BIC>
+					</FinInstnId>
+				</CdtrAgt>
+				<Cdtr>
+					<Nm>Creditor Name 2</Nm>
+				</Cdtr>
+				<CdtrAcct>
+					<Id>
+						<IBAN>FR7617629000010011890910073</IBAN>
+					</Id>
+				</CdtrAcct>
+				<RmtInf>
+					<Ustrd>VWZ Testfall TF600-1-2</Ustrd>
+				</RmtInf>
+			</CdtTrfTxInf>
+		</PmtInf>
+	</CstmrCdtTrfInitn>
+</Document>
