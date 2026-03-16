@@ -143,6 +143,7 @@ public class SignCmd implements Runnable {
      * Example: --critClaimList b64,sigT,sigD
      *
      * If set, "crit" is filtered to these values (and only if the corresponding claim is present).
+     * 
      */
     @CommandLine.Option(
             names = "--critClaimList",
@@ -439,6 +440,7 @@ public class SignCmd implements Runnable {
         Path json4SigPath = baseDir.resolve("JSON4Signature" + outName + ".json");
         Path hash4SigPath = baseDir.resolve("HASH4Signature" + outName + ".txt");
         Path hashPayload4SigPath = baseDir.resolve("HASHPayload" + outName + ".txt");
+        Path h64Payload4SigPath = baseDir.resolve("B64Payload" + outName + ".txt");
 
         CharsetDecoder dec = StandardCharsets.UTF_8.newDecoder()
                 .onMalformedInput(CodingErrorAction.REPLACE)
@@ -456,6 +458,9 @@ public class SignCmd implements Runnable {
         byte[] digest = md.digest(signingInputBytes);
         String digestB64 = Base64.getEncoder().encodeToString(digest);
         Files.writeString(hash4SigPath, digestB64 + System.lineSeparator(), StandardCharsets.UTF_8);
+        
+        
+        Files.writeString(h64Payload4SigPath, Base64.getEncoder().encodeToString(payloadEffective), StandardCharsets.UTF_8);
         
         md = MessageDigest.getInstance(digestAlg);
         digest = md.digest(payloadBytesForSigning);
