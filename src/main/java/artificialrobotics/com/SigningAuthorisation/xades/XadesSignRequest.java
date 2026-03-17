@@ -10,6 +10,7 @@ public final class XadesSignRequest {
     private final String alg;
     private final Path payloadFile;
     private final Path outFile;
+    private final String referenceURI;
 
     private final Path keyDir;
     private final String keyFile;
@@ -29,6 +30,7 @@ public final class XadesSignRequest {
                             String alg,
                             Path payloadFile,
                             Path outFile,
+                            String referenceURI,
                             Path keyDir,
                             String keyFile,
                             Path keystorePath,
@@ -43,6 +45,7 @@ public final class XadesSignRequest {
         this.alg = alg;
         this.payloadFile = payloadFile;
         this.outFile = outFile;
+        this.referenceURI = referenceURI;
         this.keyDir = keyDir;
         this.keyFile = keyFile;
         this.keystorePath = keystorePath;
@@ -84,6 +87,10 @@ public final class XadesSignRequest {
             throw new IllegalArgumentException("For detached XAdES, --out must differ from --payload. The original XML must remain unchanged.");
         }
 
+        if (referenceURI != null && referenceURI.isBlank()) {
+            throw new IllegalArgumentException("--referenceURI must not be blank when provided.");
+        }
+
         if (usesKeystore()) {
             if (keystorePassword == null) {
                 throw new IllegalArgumentException("--keystorePassword is required when --keystore is used.");
@@ -118,6 +125,17 @@ public final class XadesSignRequest {
         return keystorePath != null;
     }
 
+    public boolean hasReferenceURI() {
+        return referenceURI != null && !referenceURI.isBlank();
+    }
+
+    public String getDetachedReferenceUri() {
+        if (hasReferenceURI()) {
+            return referenceURI;
+        }
+        return payloadFile.getFileName().toString();
+    }
+
     public String getFormat() {
         return format;
     }
@@ -132,6 +150,10 @@ public final class XadesSignRequest {
 
     public Path getOutFile() {
         return outFile;
+    }
+
+    public String getReferenceURI() {
+        return referenceURI;
     }
 
     public Path getKeyDir() {
@@ -181,6 +203,8 @@ public final class XadesSignRequest {
             ", alg='" + alg + '\'' +
             ", payloadFile=" + payloadFile +
             ", outFile=" + outFile +
+            ", referenceURI='" + referenceURI + '\'' +
+            ", detachedReferenceUri='" + getDetachedReferenceUri() + '\'' +
             ", usesKeystore=" + usesKeystore() +
             ", certFile=" + certFile +
             ", debug=" + debug +

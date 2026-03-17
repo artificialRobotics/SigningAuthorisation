@@ -3,5 +3,5 @@
  "currency": "EUR",
  "debtor": {"iban":"DE02120300000000202051"},
  "creditor": {"iban":"DE75512108001245126199"},
- "remittanceInformation": "BG-Sample"
+ "remittanceInformation": "BG-Sample with .:_-äüöß@€"
 }

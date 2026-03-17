@@ -9,3 +9,8 @@ java -jar ../target/SigningAuthorisation-0.0.1-SNAPSHOT-all.jar verify --mode cr
 @echo --> with original payload as input payload
 java -jar ../target/SigningAuthorisation-0.0.1-SNAPSHOT-all.jar verify --mode crypto --alg ph --canonicalize-payload jcs --in .\result\ES512_bg_detached_canon.jws --pub-dir .\ --pub-file es512_cert.pem --payload .\Payload.json --detached
 
+
+@echo --> with canonicalize-payload as input payload
+java -jar ../target/SigningAuthorisation-0.0.1-SNAPSHOT-all.jar verify --mode eidas --alg ph --in .\result\ES512_bg_detached_canon.jws --pub-dir .\ --pub-file es512_cert.pem --payload .\result\JSON4Signaturees512_bg_detached_canon.jws.json  --truststore DSS_TrustStore.p12 --truststoreType PKCS12 --truststorePassword password --validationPolicy .\default-constraint-WebAPP.xml --detached
+
+

@@ -13,7 +13,13 @@ import eu.europa.esig.dss.spi.validation.CommonCertificateVerifier;
 import eu.europa.esig.dss.spi.x509.CommonTrustedCertificateSource;
 import eu.europa.esig.dss.validation.SignedDocumentValidator;
 import eu.europa.esig.dss.validation.reports.Reports;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.NodeList;
 
+import javax.xml.XMLConstants;
+import javax.xml.parsers.DocumentBuilderFactory;
+import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.security.KeyStore;
@@ -48,11 +54,17 @@ public final class XadesVerifyService {
         byte[] signatureBytes = Files.readAllBytes(request.getSignatureFile());
         byte[] payloadBytes = Files.readAllBytes(request.getPayloadFile());
 
+        String detachedReferenceUri = extractDetachedReferenceUri(signatureBytes, request);
+        String detachedDocumentName = detachedReferenceUri != null
+            ? detachedReferenceUri
+            : request.getPayloadFile().getFileName().toString();
+
         debug(request, "signature", request.getSignatureFile().toAbsolutePath().toString());
         debug(request, "payload", request.getPayloadFile().toAbsolutePath().toString());
         debug(request, "truststore", request.getTruststorePath().toAbsolutePath().toString());
         debug(request, "signature length", String.valueOf(signatureBytes.length));
         debug(request, "payload length", String.valueOf(payloadBytes.length));
+        debug(request, "detached reference uri", detachedDocumentName);
 
         DSSDocument signatureDocument = new InMemoryDocument(
             signatureBytes,
@@ -62,7 +74,7 @@ public final class XadesVerifyService {
 
         DSSDocument detachedPayload = new InMemoryDocument(
             payloadBytes,
-            request.getPayloadFile().getFileName().toString(),
+            detachedDocumentName,
             MimeTypeEnum.XML
         );
 
@@ -85,6 +97,33 @@ public final class XadesVerifyService {
         }
 
         return reports;
+    }
+
+    private String extractDetachedReferenceUri(byte[] signatureBytes, XadesVerifyRequest request) {
+        try {
+            DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
+            dbf.setNamespaceAware(true);
+            dbf.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+            dbf.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
+            dbf.setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
+            dbf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+
+            Document document = dbf.newDocumentBuilder().parse(new ByteArrayInputStream(signatureBytes));
+            NodeList references = document.getElementsByTagNameNS("http://www.w3.org/2000/09/xmldsig#", "Reference");
+
+            for (int i = 0; i < references.getLength(); i++) {
+                Element ref = (Element) references.item(i);
+                String uri = ref.getAttribute("URI");
+                if (uri != null && !uri.isBlank() && !uri.startsWith("#")) {
+                    debug(request, "detached reference uri extracted from signature", uri);
+                    return uri;
+                }
+            }
+            return null;
+        } catch (Exception e) {
+            debug(request, "detached reference uri extraction", "failed: " + e.getMessage());
+            return null;
+        }
     }
 
     private CommonCertificateVerifier buildCertificateVerifierFromTruststore(XadesVerifyRequest request) throws Exception {

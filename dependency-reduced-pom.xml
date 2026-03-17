@@ -80,7 +80,7 @@
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
-      <version>5.13.4</version>
+      <version>5.14.3</version>
       <scope>test</scope>
       <exclusions>
         <exclusion>
@@ -103,7 +103,7 @@
       <dependency>
         <groupId>eu.europa.ec.joinup.sd-dss</groupId>
         <artifactId>dss-bom</artifactId>
-        <version>6.3</version>
+        <version>6.4</version>
         <type>pom</type>
         <scope>import</scope>
       </dependency>

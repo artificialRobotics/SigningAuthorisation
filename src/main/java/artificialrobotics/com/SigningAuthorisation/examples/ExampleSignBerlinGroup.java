@@ -244,6 +244,7 @@ public class ExampleSignBerlinGroup {
                 .truncatedTo(ChronoUnit.SECONDS)
                 .toString();
         Matcher m = SIGT_CURRENT.matcher(headerPretty);
+        //make sigT and iat equal if given, for Baseline-B iat only should be used 
         return m.replaceAll("\"sigT\":\"" + isoZ + "\"");
     }
 
@@ -580,16 +581,18 @@ public class ExampleSignBerlinGroup {
                 }
                 """;
 
+        
         String headerPretty = """
-                {
-                  "alg": "ES512",
-                  "sub": "myPaymentResourceId12345",
-                  "canonAlg": "http://json-canonicalization.org/algorithm",
-                  "crit": ["canonAlg"]
-                }
-                """;
+        	{
+        	  "alg": "PS512",
+        	  "sub": "aPaymentResID",
+        	}
+        	""";
+        
+        
+// choose one of the following sign algorithm and keep header "alg" above in headerPretty consistent with the selected key/certificate
 
-   /*
+   
         // a) PS512: RSA private key (PKCS#8 or PKCS#1)
         String pemPrivateKey = """
 -----BEGIN PRIVATE KEY-----
@@ -666,10 +669,13 @@ uftQms0rurSbv0F5AjgfaieGOyet+8kaRaW8NWa6MAXxfI+tK6ChVa2SlOFAnTQ2
 h1U8MIKqfcRFVoAYOiUUSBy7luXdgKMWpXs=
 -----END CERTIFICATE-----
                 """;
-   */
+   
 
    /*
-        // b) ES512: EC P-521 PKCS#8 private key
+
+
+        
+     // b) ES512: EC P-521 PKCS#8 private key
         String pemPrivateKey = """
 -----BEGIN PRIVATE KEY-----
 MIHuAgEAMBAGByqGSM49AgEGBSuBBAAjBIHWMIHTAgEBBEIA121jtgtb2xKFQC47
@@ -700,39 +706,8 @@ B9gLunYXRukXDQJCAJkCrcW4gd6jNNuNZ0SzrGLtSaifV075pBeGKNLAjX67p/Fz
 9RYgP/ycOmbB6lxJ3KCT1MTBt4HxFbNaYhI/tIjP
 -----END CERTIFICATE-----
                 """;
-   */
-
-        // choose one block above and keep header "alg" consistent with the selected key/certificate
-        String pemPrivateKey = """
------BEGIN PRIVATE KEY-----
-MIHuAgEAMBAGByqGSM49AgEGBSuBBAAjBIHWMIHTAgEBBEIA121jtgtb2xKFQC47
-PnmFJph33uUoP8sYPiWqEX7jBBTj87nVZdAx4QTigUC69v0rNtLHFAVgUXnqFT64
-5gkofRChgYkDgYYABADKlOJ+zrMRnjkA4X4Ra4Bqy/LMtto8a/AfbQfC+oUvmpHQ
-pgwNnPvdhQzJ3cl+gBBwgLCbo9fIRe5DffiLm67fdQEXhPwDVK0e/cFBeSyPEpNf
-7lnZ9AXwxabLpKSgFDsRVJAEYzCcQFseeh+h8t0MCdDQc9ZfhsmswaM7oyoOuv5K
-sg==
------END PRIVATE KEY-----
-                """;
-
-        String pemCertificate = """
------BEGIN CERTIFICATE-----
-MIICujCCAhugAwIBAgIUDd+gAMlWzLL+T2bbksfx/ZoqYv0wCgYIKoZIzj0EAwQw
-aDELMAkGA1UEBhMCREUxFDASBgNVBAoMC011c3RlciBHbWJIMRQwEgYDVQQDDAtN
-dXN0ZXIgR21iSDETMBEGA1UECwwKUGF5bWVudEh1YjEYMBYGA1UEYQwPTlRSREUt
-SFJCMTIzNDU2MB4XDTI2MDIwMTE3NDQ1NloXDTM2MDEzMDE3NDQ1NlowaDELMAkG
-A1UEBhMCREUxFDASBgNVBAoMC011c3RlciBHbWJIMRQwEgYDVQQDDAtNdXN0ZXIg
-R21iSDETMBEGA1UECwwKUGF5bWVudEh1YjEYMBYGA1UEYQwPTlRSREUtSFJCMTIz
-NDU2MIGbMBAGByqGSM49AgEGBSuBBAAjA4GGAAQAypTifs6zEZ45AOF+EWuAasvy
-zLbaPGvwH20HwvqFL5qR0KYMDZz73YUMyd3JfoAQcICwm6PXyEXuQ334i5uu33UB
-F4T8A1StHv3BQXksjxKTX+5Z2fQF8MWmy6SkoBQ7EVSQBGMwnEBbHnofofLdDAnQ
-0HPWX4bJrMGjO6MqDrr+SrKjYDBeMAwGA1UdEwEB/wQCMAAwDgYDVR0PAQH/BAQD
-AgbAMB0GA1UdDgQWBBT46grmOA45o1JJuHQ4YROjlEfiaTAfBgNVHSMEGDAWgBT4
-6grmOA45o1JJuHQ4YROjlEfiaTAKBggqhkjOPQQDBAOBjAAwgYgCQgDfUGXT6rqV
-LvSUNWEE9LD6V1eVz4/QD7AdcFi2NHdVWFzePa6ufQT1B0X6x0RoBPVnYZlloNXA
-B9gLunYXRukXDQJCAJkCrcW4gd6jNNuNZ0SzrGLtSaifV075pBeGKNLAjX67p/Fz
-9RYgP/ycOmbB6lxJ3KCT1MTBt4HxFbNaYhI/tIjP
------END CERTIFICATE-----
-                """;
+                
+                */
 
         String bg = signDetachedBerlinGroup(headerPretty, payloadJson, pemPrivateKey, pemCertificate);
         System.out.println(bg);

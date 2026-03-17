@@ -11,6 +11,9 @@ set KEYSTORE_TYPE=PKCS12
 set KEYSTORE_PASSWORD=password
 set KEY_ALIAS=ps512
 set KEY_PASSWORD=password
+## set RES_ID=urn:paymenthub:pain001:myResourceId1234
+set RES_ID=pain001.myResourceId1234
+
 
 java -jar "%JAR%" sign-xml ^
   --format xades ^
@@ -22,6 +25,7 @@ java -jar "%JAR%" sign-xml ^
   --keystorePassword "%KEYSTORE_PASSWORD%" ^
   --keyAlias "%KEY_ALIAS%" ^
   --keyPassword "%KEY_PASSWORD%" ^
+  --referenceURI "%RES_ID%" ^
   --debug
 
 if errorlevel 1 (

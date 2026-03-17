@@ -43,6 +43,12 @@ public class SignXmlCmd implements Runnable {
     )
     Path outFile;
 
+    @CommandLine.Option(
+        names = "--referenceURI",
+        description = "Optional full external reference URI for the detached ds:Reference. Example: urn:paymenthub:pain001:1234567890"
+    )
+    String referenceURI;
+
     @CommandLine.Option(names = "--key-dir")
     Path keyDir;
 
@@ -83,6 +89,7 @@ public class SignXmlCmd implements Runnable {
                 alg,
                 payloadFile,
                 outFile,
+                referenceURI,
                 keyDir,
                 keyFile,
                 keystorePath,

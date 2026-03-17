@@ -5,28 +5,30 @@ import eu.europa.esig.dss.enumerations.EncryptionAlgorithm;
 import eu.europa.esig.dss.enumerations.SignatureAlgorithm;
 import eu.europa.esig.dss.enumerations.SignatureLevel;
 import eu.europa.esig.dss.enumerations.SignaturePackaging;
+import eu.europa.esig.dss.model.InMemoryDocument;
 import eu.europa.esig.dss.model.x509.CertificateToken;
 import eu.europa.esig.dss.xades.XAdESSignatureParameters;
+import eu.europa.esig.dss.xades.reference.DSSReference;
 
 import java.security.PrivateKey;
 import java.security.spec.MGF1ParameterSpec;
 import java.security.spec.PSSParameterSpec;
 import java.time.Instant;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 
 public final class XadesSignatureParametersFactory {
 
     public XAdESSignatureParameters create(XadesSignRequest request,
-                                           XadesResolvedKeyMaterial keyMaterial) {
+                                           XadesResolvedKeyMaterial keyMaterial,
+                                           byte[] payloadBytes) {
         ResolvedXadesAlgorithm resolved = resolveAlgorithm(request.getAlg(), keyMaterial.getPrivateKey());
 
         XAdESSignatureParameters parameters = new XAdESSignatureParameters();
         parameters.setSignaturePackaging(SignaturePackaging.DETACHED);
         parameters.setSignatureLevel(SignatureLevel.XAdES_BASELINE_B);
 
-        // DSS leitet den effektiven SignatureAlgorithm aus EncryptionAlgorithm + DigestAlgorithm ab.
-        // Für RSA-PSS muss daher explizit RSASSA_PSS gesetzt werden.
         parameters.setEncryptionAlgorithm(resolved.getEncryptionAlgorithm());
         parameters.setDigestAlgorithm(resolved.getDigestAlgorithm());
 
@@ -34,10 +36,29 @@ public final class XadesSignatureParametersFactory {
         parameters.setCertificateChain(keyMaterial.toCertificateTokens());
         parameters.setPrettyPrint(true);
 
-        // Dieselbe Parameterinstanz muss für getDataToSign(...) und signDocument(...) wiederverwendet werden.
         parameters.bLevel().setSigningDate(Date.from(Instant.now()));
 
+        if (request.hasReferenceURI()) {
+            parameters.setReferences(buildCustomDetachedReferences(request, payloadBytes, resolved.getDigestAlgorithm()));
+        }
+
         return parameters;
+    }
+
+    private List<DSSReference> buildCustomDetachedReferences(XadesSignRequest request,
+                                                             byte[] payloadBytes,
+                                                             DigestAlgorithm digestAlgorithm) {
+        DSSReference detachedReference = new DSSReference();
+        detachedReference.setUri(request.getDetachedReferenceUri());
+        detachedReference.setDigestMethodAlgorithm(digestAlgorithm);
+
+        InMemoryDocument detachedContents = new InMemoryDocument(
+            payloadBytes,
+            request.getPayloadFile().getFileName().toString()
+        );
+        detachedReference.setContents(detachedContents);
+
+        return List.of(detachedReference);
     }
 
     public ResolvedXadesAlgorithm resolveAlgorithm(String alg, PrivateKey privateKey) {

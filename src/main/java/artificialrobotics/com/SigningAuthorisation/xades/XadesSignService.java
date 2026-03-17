@@ -32,9 +32,9 @@ public final class XadesSignService {
         XadesSignatureParametersFactory.ResolvedXadesAlgorithm resolvedAlgorithm =
             parametersFactory.resolveAlgorithm(request.getAlg(), keyMaterial.getPrivateKey());
 
-        XAdESSignatureParameters parameters = parametersFactory.create(request, keyMaterial);
-
         byte[] xmlBytes = Files.readAllBytes(request.getPayloadFile());
+        XAdESSignatureParameters parameters = parametersFactory.create(request, keyMaterial, xmlBytes);
+
         InMemoryDocument toSignDocument = new InMemoryDocument(
             xmlBytes,
             request.getPayloadFile().getFileName().toString(),
@@ -47,6 +47,8 @@ public final class XadesSignService {
         debug(request, "format", request.getFormat());
         debug(request, "payload", request.getPayloadFile().toAbsolutePath().toString());
         debug(request, "out", request.getOutFile().toAbsolutePath().toString());
+        debug(request, "detached reference uri", request.getDetachedReferenceUri());
+        debug(request, "dss document name", request.getPayloadFile().getFileName().toString());
         debug(request, "key algorithm", keyMaterial.getPrivateKey().getAlgorithm());
         debug(request, "signing cert subject", keyMaterial.getSigningCertificate().getSubjectX500Principal().getName());
         debug(request, "resolved DSS signature algorithm", resolvedAlgorithm.getSignatureAlgorithm().name());
@@ -72,6 +74,7 @@ public final class XadesSignService {
 
         System.out.println("Wrote detached XAdES signature: " + request.getOutFile().toAbsolutePath());
         System.out.println("Original XML payload unchanged: " + request.getPayloadFile().toAbsolutePath());
+        System.out.println("Detached ds:Reference URI: " + request.getDetachedReferenceUri());
     }
 
     private SignatureValue signDataToSign(ToBeSigned dataToSign,
