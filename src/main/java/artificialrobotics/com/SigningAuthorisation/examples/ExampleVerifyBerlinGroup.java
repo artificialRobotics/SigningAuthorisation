@@ -23,7 +23,11 @@ import java.util.regex.Pattern;
  *   4) Extract and sanity-check "iat"
  *   5) Optionally inspect "x5t#S256" (informational consistency check)
  *   6) Extract "alg" and check it is PS512 or ES512
- *   7) Canonicalize payload using JCS and Base64URL-encode it (mirrors signer)
+ *   7) Payload handling:
+ *        - if "canonAlg":"JCS" is present in the protected header:
+ *              canonicalize payload via JCS and Base64URL-encode it
+ *        - if no "canonAlg" is present:
+ *              use payload as given and Base64URL-encode it
  *   8) Build signing input: ASCII(protectedB64 + "." + payloadB64)
  *   9) Compute SHA-512 over signing input
  *  10) Decode signature bytes
@@ -35,7 +39,7 @@ import java.util.regex.Pattern;
  *   - For ES512: messageToVerify is the final ECDSA message for NONEwithECDSA
  *
  * Important ES512 update:
- *   - The signer now emits a JWS-compliant JOSE ECDSA signature format (raw R||S),
+ *   - The signer emits a JWS-compliant JOSE ECDSA signature format (raw R||S),
  *     not DER.
  *   - Therefore, verification must transcode raw R||S -> DER before passing the
  *     signature to NONEwithECDSA.
@@ -45,6 +49,10 @@ import java.util.regex.Pattern;
  *     public key / leaf certificate.
  *   - x5t#S256 may be present and can be checked for consistency, but is not used
  *     as the key source here.
+ *
+ * Payload canonicalization:
+ *   - This verifier no longer assumes JCS implicitly.
+ *   - JCS is applied only if the protected header explicitly contains "canonAlg":"JCS".
  */
 public class ExampleVerifyBerlinGroup {
 
@@ -60,6 +68,8 @@ public class ExampleVerifyBerlinGroup {
             Pattern.compile("\"iat\"\\s*:\\s*(\\d+)");
     private static final Pattern X5T_S256_PATTERN =
             Pattern.compile("\"x5t#S256\"\\s*:\\s*\"([^\"]+)\"");
+    private static final Pattern CANON_ALG_PATTERN =
+            Pattern.compile("\"canonAlg\"\\s*:\\s*\"([^\"]*)\"", Pattern.CASE_INSENSITIVE);
 
     /** Algorithm registry (selection via map, no switch needed inside verifySignature). */
     private static final Map<String, AlgoVerifier> VERIFIERS = new HashMap<>();
@@ -114,8 +124,8 @@ public class ExampleVerifyBerlinGroup {
             throw new IllegalArgumentException("Unsupported alg in protected header: " + alg);
         }
 
-        // 7) Canonicalize payload using JCS and Base64URL-encode it (mirrors signer)
-        String payloadB64 = payloadJsonToBase64UrlJcs(payloadJson);
+        // 7) Payload handling depending on canonAlg in protected header
+        String payloadB64 = payloadJsonToBase64Url(payloadJson, protectedJson);
 
         // 8) Build signing input (ASCII) as defined by RFC 7515 §5
         byte[] signingInput = (bg.protectedB64 + "." + payloadB64).getBytes(StandardCharsets.US_ASCII);
@@ -149,11 +159,19 @@ public class ExampleVerifyBerlinGroup {
         return verifier.verify(pub, messageToVerify, signature);
     }
 
-    /* ---------- Payload canonicalization ---------- */
+    /* ---------- Payload handling ---------- */
 
-    public static String payloadJsonToBase64UrlJcs(String jsonPayloadPrettyOrCompact) {
-        String canonical = JsonCanonicalizerJcs.canonicalize(jsonPayloadPrettyOrCompact);
-        byte[] utf8 = canonical.getBytes(StandardCharsets.UTF_8);
+    public static String payloadJsonToBase64Url(String jsonPayloadPrettyOrCompact, String protectedHeaderJson) {
+        String canonAlg = extractClaim(protectedHeaderJson, CANON_ALG_PATTERN);
+
+        String payloadToEncode;
+        if (canonAlg == null || canonAlg.isBlank()) {
+            payloadToEncode = jsonPayloadPrettyOrCompact;
+        } else { // apply canonicalization on payload 
+            payloadToEncode = JsonCanonicalizerJcs.canonicalize(jsonPayloadPrettyOrCompact);
+        }
+
+        byte[] utf8 = payloadToEncode.getBytes(StandardCharsets.UTF_8);
         return Base64.getUrlEncoder().withoutPadding().encodeToString(utf8);
     }
 
@@ -372,29 +390,27 @@ public class ExampleVerifyBerlinGroup {
     public static void main(String[] args) throws Exception {
 
         // please insert here the Berlin Group signatureData
-    	// you can create e.g. with ExampleSignBerlinGroup
+        // you can create e.g. with ExampleSignBerlinGroup
         String berlinGroupWrapper = """
 {
   "signatureData": {
-    "protected": "eyJhbGciOiJQUzUxMiIsInN1YiI6ImFQYXltZW50UmVzSUQiLCwiaWF0IjoxNzczNzQ4NzUwLCJ4NWMiOlsiTUlJRkpqQ0NBMXFnQXdJQkFnSVVHbkFrNy92dzlCc2VVTkdKQmVYZ3lpNFhoRkF3UVFZSktvWklodmNOQVFFS01EU2dEekFOQmdsZ2hrZ0JaUU1FQWdNRkFLRWNNQm9HQ1NxR1NJYjNEUUVCQ0RBTkJnbGdoa2dCWlFNRUFnTUZBS0lEQWdGQU1HZ3hDekFKQmdOVkJBWVRBa1JGTVJRd0VnWURWUVFLREF0TmRYTjBaWElnUjIxaVNERVVNQklHQTFVRUF3d0xUWFZ6ZEdWeUlFZHRZa2d4RXpBUkJnTlZCQXNNQ2xCaGVXMWxiblJJZFdJeEdEQVdCZ05WQkdFTUQwNVVVa1JGTFVoU1FqRXlNelExTmpBZUZ3MHlOakF5TURFeE56UTBOVFZhRncwek5qQXhNekF4TnpRME5UVmFNR2d4Q3pBSkJnTlZCQVlUQWtSRk1SUXdFZ1lEVlFRS0RBdE5kWE4wWlhJZ1IyMWlTREVVTUJJR0ExVUVBd3dMVFhWemRHVnlJRWR0WWtneEV6QVJCZ05WQkFzTUNsQmhlVzFsYm5SSWRXSXhHREFXQmdOVkJHRU1EMDVVVWtSRkxVaFNRakV5TXpRMU5qQ0NBYUl3RFFZSktvWklodmNOQVFFQkJRQURnZ0dQQURDQ0FZb0NnZ0dCQU5HMThYdUluNDUrK013cER4Y1MzcFU0S1hmQ0N6WWowMWtzWmc0Q3dobTVXTUFwa3VCYThTOVFrWERKZnB1ZFUrTHFoSythc2VndnRGbUdkZFEydVhPQVpSQWNYOW1SdEt1WUp1SmE4R0V2YmloNDVwTHJ0Q1BLbUVTcW85QTkxeVZZaVV5NDZhUDdpMFhrYUU2OHl0Tm9mSVNseDRNZ0ZLd1hQVytzMkg3V2ZPL2FRRExhY1BXUWFzZ3RraXNMYzVoekJ3TDNkWDZ2RW5NZUEwR0FRZDZHWTgvaXRBb2YzVStTcTJ1TVJkOVJGYkkydE9kWFhNc3VsN2hwMzRBSDdGanVrU0NnMGVReE9qajYyVDNrSjZjSk9mQjFhY3hpdnFIVGZuSG95eWF5S3JrSzk1dS8xWlZxZ2p5Y1Y2LzE3NVNTVG9mWG1hL1ZnU056MDJDRW9KK0RsUjRuS2o4a2krV1FpN0FvOE8zd2JVdEZsNG5IUmVRMUYzaFdOa21qTTlQT3pHYnZvc2diU2JQWW8xY1EvTmJ2bG45UXhGcHc1YlVjSW5BeFdtdm5MUnRFMnlmZzIvSWIrNDgrQ2pndTVGdEVva29IaUxudGhGcFFFTTdZZS9Md3phNDZJRGE0S3FwakdGTERkVGNKd2p0N3c3dnQrVEltbHYrU1ltQXRtd0lEQVFBQm8yQXdYakFNQmdOVkhSTUJBZjhFQWpBQU1BNEdBMVVkRHdFQi93UUVBd0lHd0RBZEJnTlZIUTRFRmdRVW5ZbVlrVS84WTcwU2ZBTlRoVmUyQWlDU3k1a3dId1lEVlIwakJCZ3dGb0FVblltWWtVLzhZNzBTZkFOVGhWZTJBaUNTeTVrd1FRWUpLb1pJaHZjTkFRRUtNRFNnRHpBTkJnbGdoa2dCWlFNRUFnTUZBS0VjTUJvR0NTcUdTSWIzRFFFQkNEQU5CZ2xnaGtnQlpRTUVBZ01GQUtJREFnRkFBNElCZ1FBaWw4TUJsbTlpb1FFZlgvbWw0SXNHZTRHV2g0b0svYXBFbTdEdnVnRzFmSXR4eC9SQ0hzNGVvYkNDWXZBNVpQZUUwK2llQU9jM1N2VlJEZ0YxMENvc0t0T0ZRYzNuekEwQUx2akp5Yk12VVRxSi9uN2FOYTZoU1hPRmlWOEhyNFIxT2JkTnBPUXhkVk5EYkpTeXNMbTYzWFk4NlZ1bldwb3hud1R1b0picEdYdjQzV0JsK3IyNVJZdFU1K3grMVBaMmt6eFFFWXJTS1U3OE9tdmRtMnVUd0E3Q3RFOG0wdWtERUZUellJWEZOQW1LWHVDNVp0NU5VdFl4ZHNRSXRhSnpRODhvTU1yeVlUWDFLTEUyZXNDZ3U1L3RRRWt1aysrdEF6d0RmK3dGc1A4ZnR2TjgxM2tTanJBbnhHKzluSFcxZURlWkkyVkFxZEhaNG4vOWxlVXVnMW56Q2h2NHVmdFFtczBydXJTYnYwRjVBamdmYWllR095ZXQrOGthUmFXOE5XYTZNQVh4ZkkrdEs2Q2hWYTJTbE9GQW5UUTI3aDA4amdKVHNNRCt4TUtQenF3VWNNSWVzd0hoWVVreHN0T3NmOTU5RmZHMEtFbnQzZ29VbTNlN3NDTTZ4KzlvaDFVOE1JS3FmY1JGVm9BWU9pVVVTQnk3bHVYZGdLTVdwWHM9Il0sIng1dCNTMjU2IjoiejFzVXdXaXFLQ21zbm1GV3E5SkxISkZ5QUdBVnljM1lJXzVjTXoyVlF3byJ9",
-    "signature": "vtNN_aGqh4XhdiYx0TJg6QnJ4Uk1vgTbCvRzb5MtSHDh74ei2VRlr8heCyfb8NRWDIlsSaqCHQjonWGPXL-WJx5srnNkSfX5RZAyv4R4z8lslO5KiDJ-qyYsl4AMYRNDrit0LXkVxYldV2tcKhCQ0iY__YmbsMV8e88fQEqZuZTLoG5QvKJG15-d9YQdw9ZhWnsun0cQmxv26UW5yRQjOq0t--rS8p8pQv7qj_wtmc6uocc-mNo1QXFhImR3UjIioMIAYhaVwXrBk62lD_BIgcanJX_-HrEl_bCvdJqmOYBsAcJGEMsC3uO7-6TRzIIrQAITVkHpKFsUqbVfX2izAom7Tc15s42FHFlnSwKMuhIYOlvC3SOlR71sn1QpBtdoRZzRY645IMc689iOanqGghEiieUEQZCDKfX7zyxahLqL3YLmd63C0V4J9TjPSVs-ZiYta3zA2xSuGYczw7Vvr_OYQ8vmhY9e-Qq1dJ5-IlfkWC3JVhiDBP6I7yLLvoNT"
+    "protected": "eyJhbGciOiJQUzUxMiIsIng1YyI6WyJNSUlGSmpDQ0ExcWdBd0lCQWdJVUduQWs3L3Z3OUJzZVVOR0pCZVhneWk0WGhGQXdRUVlKS29aSWh2Y05BUUVLTURTZ0R6QU5CZ2xnaGtnQlpRTUVBZ01GQUtFY01Cb0dDU3FHU0liM0RRRUJDREFOQmdsZ2hrZ0JaUU1FQWdNRkFLSURBZ0ZBTUdneEN6QUpCZ05WQkFZVEFrUkZNUlF3RWdZRFZRUUtEQXROZFhOMFpYSWdSMjFpU0RFVU1CSUdBMVVFQXd3TFRYVnpkR1Z5SUVkdFlrZ3hFekFSQmdOVkJBc01DbEJoZVcxbGJuUklkV0l4R0RBV0JnTlZCR0VNRDA1VVVrUkZMVWhTUWpFeU16UTFOakFlRncweU5qQXlNREV4TnpRME5UVmFGdzB6TmpBeE16QXhOelEwTlRWYU1HZ3hDekFKQmdOVkJBWVRBa1JGTVJRd0VnWURWUVFLREF0TmRYTjBaWElnUjIxaVNERVVNQklHQTFVRUF3d0xUWFZ6ZEdWeUlFZHRZa2d4RXpBUkJnTlZCQXNNQ2xCaGVXMWxiblJJZFdJeEdEQVdCZ05WQkdFTUQwNVVVa1JGTFVoU1FqRXlNelExTmpDQ0FhSXdEUVlKS29aSWh2Y05BUUVCQlFBRGdnR1BBRENDQVlvQ2dnR0JBTkcxOFh1SW40NSsrTXdwRHhjUzNwVTRLWGZDQ3pZajAxa3NaZzRDd2htNVdNQXBrdUJhOFM5UWtYREpmcHVkVStMcWhLK2FzZWd2dEZtR2RkUTJ1WE9BWlJBY1g5bVJ0S3VZSnVKYThHRXZiaWg0NXBMcnRDUEttRVNxbzlBOTF5VllpVXk0NmFQN2kwWGthRTY4eXROb2ZJU2x4NE1nRkt3WFBXK3MySDdXZk8vYVFETGFjUFdRYXNndGtpc0xjNWh6QndMM2RYNnZFbk1lQTBHQVFkNkdZOC9pdEFvZjNVK1NxMnVNUmQ5UkZiSTJ0T2RYWE1zdWw3aHAzNEFIN0ZqdWtTQ2cwZVF4T2pqNjJUM2tKNmNKT2ZCMWFjeGl2cUhUZm5Ib3l5YXlLcmtLOTV1LzFaVnFnanljVjYvMTc1U1NUb2ZYbWEvVmdTTnowMkNFb0orRGxSNG5LajhraStXUWk3QW84TzN3YlV0Rmw0bkhSZVExRjNoV05rbWpNOVBPekdidm9zZ2JTYlBZbzFjUS9OYnZsbjlReEZwdzViVWNJbkF4V212bkxSdEUyeWZnMi9JYis0OCtDamd1NUZ0RW9rb0hpTG50aEZwUUVNN1llL0x3emE0NklEYTRLcXBqR0ZMRGRUY0p3anQ3dzd2dCtUSW1sditTWW1BdG13SURBUUFCbzJBd1hqQU1CZ05WSFJNQkFmOEVBakFBTUE0R0ExVWREd0VCL3dRRUF3SUd3REFkQmdOVkhRNEVGZ1FVblltWWtVLzhZNzBTZkFOVGhWZTJBaUNTeTVrd0h3WURWUjBqQkJnd0ZvQVVuWW1Za1UvOFk3MFNmQU5UaFZlMkFpQ1N5NWt3UVFZSktvWklodmNOQVFFS01EU2dEekFOQmdsZ2hrZ0JaUU1FQWdNRkFLRWNNQm9HQ1NxR1NJYjNEUUVCQ0RBTkJnbGdoa2dCWlFNRUFnTUZBS0lEQWdGQUE0SUJnUUFpbDhNQmxtOWlvUUVmWC9tbDRJc0dlNEdXaDRvSy9hcEVtN0R2dWdHMWZJdHh4L1JDSHM0ZW9iQ0NZdkE1WlBlRTAraWVBT2MzU3ZWUkRnRjEwQ29zS3RPRlFjM256QTBBTHZqSnliTXZVVHFKL243YU5hNmhTWE9GaVY4SHI0UjFPYmROcE9ReGRWTkRiSlN5c0xtNjNYWTg2VnVuV3BveG53VHVvSmJwR1h2NDNXQmwrcjI1Ull0VTUreCsxUFoya3p4UUVZclNLVTc4T212ZG0ydVR3QTdDdEU4bTB1a0RFRlR6WUlYRk5BbUtYdUM1WnQ1TlV0WXhkc1FJdGFKelE4OG9NTXJ5WVRYMUtMRTJlc0NndTUvdFFFa3VrKyt0QXp3RGYrd0ZzUDhmdHZOODEza1NqckFueEcrOW5IVzFlRGVaSTJWQXFkSFo0bi85bGVVdWcxbnpDaHY0dWZ0UW1zMHJ1clNidjBGNUFqZ2ZhaWVHT3lldCs4a2FSYVc4TldhNk1BWHhmSSt0SzZDaFZhMlNsT0ZBblRRMjdoMDhqZ0pUc01EK3hNS1B6cXdVY01JZXN3SGhZVWt4c3RPc2Y5NTlGZkcwS0VudDNnb1VtM2U3c0NNNngrOW9oMVU4TUlLcWZjUkZWb0FZT2lVVVNCeTdsdVhkZ0tNV3BYcz0iXSwieDV0I1MyNTYiOiJ6MXNVd1dpcUtDbXNubUZXcTlKTEhKRnlBR0FWeWMzWUlfNWNNejJWUXdvIiwic3ViIjoiYVBheW1lbnRSZXNJRCIsImlhdCI6MTc3NDMzOTcxMiwiY2Fub25BbGciOiJodHRwOi8vanNvbi1jYW5vbmljYWxpemF0aW9uLm9yZy9hbGdvcml0aG0ifQ",
+    "signature": "lmpH87MZrTEQmb7G7_kDh12EtqRJMjXtEc5_yKrCCkHd97tIGV0Y5YMwGN-kSM9WMd6QzHHUos2l3_CQXLvbmpdq737xVMXQ7C3Fbmf8OEckOl5Vgx-0EC4Lal0ljpYuIvX1_O1qriDf_PbmrIKjr-XBovVr_Ym7MIxMUut3xGPjcqY9-4Nj_H892_PtXMjhyLhMkiabEf-aaKXi-YmaPZneie1PgDeXMwSfq5tZm5s8uPg0PGWaq2NsoOFc-U9HaYguZGco5vCAYwKQ810wCh7xyp-XDsjPzVLEiJkZ1T-kIDcw3tBLoB6CJS6L-29rfRuIDkMEoT-7grPBknkOpxzkZt5LPll9peadlFp1nWmLlKUaPJ5PJiapNqDtym5JmufKUdvbMaTB1hLbcPZiFGIagpiVCbx-NOPkQPgEVyBZ6hZrlplAV0dkBOf2aJZEc1mATBeSzSmpHd4Ly3fTTweEGkcOOYpOzdEl6_fyU7nZja4azB0JItz1IjJ-8xNv"
   }
 }
-
-
                 """;
 
         String payloadJson = """
-                {
-                  "amount": "10.50",
-                  "currency": "EUR",
-                  "debtor": {"iban":"DE02120300000000202051"},
-                  "creditor": {"iban":"DE75512108001245126199"},
-                  "remittanceInformation": "BG-Sample"
-                }
+{
+ "amount": "10.50",
+ "currency": "EUR",
+ "debtor": {"iban":"DE02120300000000202051"},
+ "creditor": {"iban":"DE75512108001245126199"},
+ "remittanceInformation": "BG-Sample with .:_-äüöß@€"
+}
                 """;
 
         boolean ok = verifyDetachedBerlinGroup(berlinGroupWrapper, payloadJson);
-        System.out.println("VALID (crypto-only, BG detached, pre-hash): " + ok);
+        System.out.println("VALID (crypto-only, BG detached): " + ok);
     }
 }

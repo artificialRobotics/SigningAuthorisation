@@ -37,7 +37,11 @@ import java.util.regex.Pattern;
  *        - x5c[0]    = base64 DER (NOT base64url)
  *        - x5t#S256  = Base64URL(SHA-256(cert DER))
  *   4) Protected header: compact JSON -> Base64URL (RFC 7515)
- *   5) Payload canonicalization via JCS -> Base64URL
+ *   5) Payload handling:
+ *        - if "canonAlg":"JCS" is present in the protected header:
+ *              canonicalize payload via JCS -> Base64URL
+ *        - if no "canonAlg" is present:
+ *              use payload as given -> Base64URL
  *   6) Build signing input: ASCII(protectedB64 + "." + payloadB64)
  *   7) Compute SHA-512 over signing input  => messageToSign (pre-hash)
  *   8) Sign messageToSign depending on "alg":
@@ -55,6 +59,8 @@ import java.util.regex.Pattern;
  *     otherwise standard JOSE/JAdES validators (for example DSS) will reject it.
  *   - x5c is used consistently in the examples. x5t#S256 is added automatically as an additional
  *     certificate reference derived from the same certificate.
+ *   - Payload canonicalization is no longer assumed implicitly. It is executed only if the
+ *     protected header contains "canonAlg":"JCS".
  */
 public class ExampleSignBerlinGroup {
 
@@ -73,6 +79,9 @@ public class ExampleSignBerlinGroup {
 
     private static final Pattern IAT_PATTERN =
             Pattern.compile("\"iat\"\\s*:\\s*(\\d+)");
+
+    private static final Pattern CANON_ALG_PATTERN =
+            Pattern.compile("\"canonAlg\"\\s*:\\s*\"([^\"]+)\"", Pattern.CASE_INSENSITIVE);
 
     /** Signing registry (no switch required in the main flow). */
     private static final Map<String, DigestSigner> SIGNERS = new HashMap<>();
@@ -94,10 +103,18 @@ public class ExampleSignBerlinGroup {
         return Base64.getUrlEncoder().withoutPadding().encodeToString(utf8);
     }
 
-    /* ---------- Payload canonicalization to Base64URL ---------- */
-    public static String payloadJsonToBase64UrlJcs(String jsonPayloadPrettyOrCompact) {
-        String canonical = JsonCanonicalizerJcs.canonicalize(jsonPayloadPrettyOrCompact);
-        byte[] utf8 = canonical.getBytes(StandardCharsets.UTF_8);
+    /* ---------- Payload handling to Base64URL ---------- */
+    public static String payloadJsonToBase64Url(String jsonPayloadPrettyOrCompact, String protectedHeaderJson) {
+        String canonAlg = extractCanonAlgFromProtectedHeaderJson(protectedHeaderJson);
+
+        String payloadToEncode;
+        if (canonAlg == null || canonAlg.isBlank()) {
+            payloadToEncode = jsonPayloadPrettyOrCompact;
+        } else { //when canonAlg is set, do canonicalize the payload before signing
+            payloadToEncode = JsonCanonicalizerJcs.canonicalize(jsonPayloadPrettyOrCompact);
+        }
+
+        byte[] utf8 = payloadToEncode.getBytes(StandardCharsets.UTF_8);
         return Base64.getUrlEncoder().withoutPadding().encodeToString(utf8);
     }
 
@@ -156,7 +173,8 @@ public class ExampleSignBerlinGroup {
      * Orchestrate detached signature creation and return Berlin Group wrapper JSON.
      *
      * @param protectedHeaderPrettyJson protected header in pretty JSON, may contain "sigT":"CURRENT"
-     * @param payloadJson               business payload JSON; canonicalized via JCS
+     * @param payloadJson               business payload JSON; canonicalization is only performed if the
+     *                                 protected header contains "canonAlg":"JCS"
      * @param privateKeyPem             private key PEM:
      *                                 - for PS512: RSA PKCS#8 ("PRIVATE KEY") or PKCS#1 ("RSA PRIVATE KEY")
      *                                 - for ES512: EC P-521 PKCS#8 ("PRIVATE KEY")
@@ -178,8 +196,8 @@ public class ExampleSignBerlinGroup {
         String protectedB64 = Base64.getUrlEncoder().withoutPadding()
                 .encodeToString(compactHeader.getBytes(StandardCharsets.UTF_8));
 
-        // 5) Payload canonicalization via JCS
-        String payloadB64 = payloadJsonToBase64UrlJcs(payloadJson);
+        // 5) Payload handling depending on canonAlg in the protected header
+        String payloadB64 = payloadJsonToBase64Url(payloadJson, enrichedHeader);
 
         // 6 + 7) Compute signing input + SHA-512 digest
         SigningInput si = computeSigningInputAndHash(protectedB64, payloadB64);
@@ -244,7 +262,7 @@ public class ExampleSignBerlinGroup {
                 .truncatedTo(ChronoUnit.SECONDS)
                 .toString();
         Matcher m = SIGT_CURRENT.matcher(headerPretty);
-        //make sigT and iat equal if given, for Baseline-B iat only should be used 
+        // make sigT and iat equal if given, for Baseline-B iat only should be used
         return m.replaceAll("\"sigT\":\"" + isoZ + "\"");
     }
 
@@ -369,6 +387,11 @@ public class ExampleSignBerlinGroup {
 
     private static String extractAlgFromProtectedHeaderJson(String protectedHeaderJson) {
         Matcher m = ALG_PATTERN.matcher(protectedHeaderJson);
+        return m.find() ? m.group(1) : null;
+    }
+
+    private static String extractCanonAlgFromProtectedHeaderJson(String protectedHeaderJson) {
+        Matcher m = CANON_ALG_PATTERN.matcher(protectedHeaderJson);
         return m.find() ? m.group(1) : null;
     }
 
@@ -568,31 +591,37 @@ public class ExampleSignBerlinGroup {
      * IMPORTANT for ES512:
      *   - Provide an EC P-521 PKCS#8 private key (BEGIN PRIVATE KEY) matching the certificate.
      *   - The final JWS signature is emitted in JOSE raw R||S format.
+     *
+     * IMPORTANT for canonAlg:
+     *   - Payload canonicalization is only executed if the protected header explicitly contains
+     *     "canonAlg":"http://json-canonicalization.org/algorithm" or "JCS".
+     *   - If canonAlg is omitted, the payload is used as provided.
      */
     public static void main(String[] args) throws Exception {
 
         String payloadJson = """
+{
+ "amount": "10.50",
+ "currency": "EUR",
+ "debtor": {"iban":"DE02120300000000202051"},
+ "creditor": {"iban":"DE75512108001245126199"},
+ "remittanceInformation": "BG-Sample with .:_-äüöß@€"
+}
+                """;
+
+
+        String headerPretty = """
                 {
-                  "amount": "10.50",
-                  "currency": "EUR",
-                  "debtor": {"iban":"DE02120300000000202051"},
-                  "creditor": {"iban":"DE75512108001245126199"},
-                  "remittanceInformation": "BG-Sample"
+                  "alg": "PS512",
+                  "sub": "aPaymentResID",
+                  "canonAlg": "http://json-canonicalization.org/algorithm"
                 }
                 """;
 
-        
-        String headerPretty = """
-        	{
-        	  "alg": "PS512",
-        	  "sub": "aPaymentResID",
-        	}
-        	""";
-        
-        
+
 // choose one of the following sign algorithm and keep header "alg" above in headerPretty consistent with the selected key/certificate
 
-   
+
         // a) PS512: RSA private key (PKCS#8 or PKCS#1)
         String pemPrivateKey = """
 -----BEGIN PRIVATE KEY-----
@@ -669,12 +698,9 @@ uftQms0rurSbv0F5AjgfaieGOyet+8kaRaW8NWa6MAXxfI+tK6ChVa2SlOFAnTQ2
 h1U8MIKqfcRFVoAYOiUUSBy7luXdgKMWpXs=
 -----END CERTIFICATE-----
                 """;
-   
+
 
    /*
-
-
-        
      // b) ES512: EC P-521 PKCS#8 private key
         String pemPrivateKey = """
 -----BEGIN PRIVATE KEY-----
@@ -706,8 +732,7 @@ B9gLunYXRukXDQJCAJkCrcW4gd6jNNuNZ0SzrGLtSaifV075pBeGKNLAjX67p/Fz
 9RYgP/ycOmbB6lxJ3KCT1MTBt4HxFbNaYhI/tIjP
 -----END CERTIFICATE-----
                 """;
-                
-                */
+    */
 
         String bg = signDetachedBerlinGroup(headerPretty, payloadJson, pemPrivateKey, pemCertificate);
         System.out.println(bg);
