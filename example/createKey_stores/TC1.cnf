@@ -1,0 +1,21 @@
+[ req ]
+prompt = no
+distinguished_name = dn
+req_extensions = req_ext
+string_mask = utf8only
+utf8 = yes
+oid_section = new_oids
+
+[ new_oids ]
+organizationIdentifier = 2.5.4.97
+
+[ dn ]
+C = DE
+O = Musterfirma GmbH
+OU = Payment Hub
+organizationIdentifier = NTRDE-HRB123456
+CN = Musterfirma Payment-Hub eSeal
+
+[ req_ext ]
+basicConstraints = critical,CA:false
+keyUsage = critical,digitalSignature,contentCommitment

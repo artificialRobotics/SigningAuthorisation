@@ -11,10 +11,10 @@ organizationIdentifier = 2.5.4.97
 
 [ dn ]
 C = DE
-O = Musterfirma GmbH
-organizationIdentifier = NTRDE-HRB123456
-CN = Musterfirma Payment Hub eSeal
+O = Startup GmbH
 OU = Payment Hub
+organizationIdentifier = NTRDE-HRB323456
+CN = Startup GmbH-Department2
 
 [ req_ext ]
 basicConstraints = critical,CA:false
