@@ -71,7 +71,7 @@ public final class XadesSignatureParametersFactory {
 
         return switch (normalized) {
             case "RS256", "RSA_SHA256" -> {
-                requireRsaKey(keyAlgorithm, alg);
+                requireClassicRsaKey(keyAlgorithm, alg);
                 yield new ResolvedXadesAlgorithm(
                     SignatureAlgorithm.RSA_SHA256,
                     EncryptionAlgorithm.RSA,
@@ -81,7 +81,7 @@ public final class XadesSignatureParametersFactory {
                 );
             }
             case "RS384", "RSA_SHA384" -> {
-                requireRsaKey(keyAlgorithm, alg);
+                requireClassicRsaKey(keyAlgorithm, alg);
                 yield new ResolvedXadesAlgorithm(
                     SignatureAlgorithm.RSA_SHA384,
                     EncryptionAlgorithm.RSA,
@@ -91,7 +91,7 @@ public final class XadesSignatureParametersFactory {
                 );
             }
             case "RS512", "RSA_SHA512" -> {
-                requireRsaKey(keyAlgorithm, alg);
+                requireClassicRsaKey(keyAlgorithm, alg);
                 yield new ResolvedXadesAlgorithm(
                     SignatureAlgorithm.RSA_SHA512,
                     EncryptionAlgorithm.RSA,
@@ -101,7 +101,7 @@ public final class XadesSignatureParametersFactory {
                 );
             }
             case "PS256", "RSA_SSA_PSS_SHA256_MGF1" -> {
-                requireRsaKey(keyAlgorithm, alg);
+                requireRsaOrPssKey(keyAlgorithm, alg);
                 yield new ResolvedXadesAlgorithm(
                     SignatureAlgorithm.RSA_SSA_PSS_SHA256_MGF1,
                     EncryptionAlgorithm.RSASSA_PSS,
@@ -111,7 +111,7 @@ public final class XadesSignatureParametersFactory {
                 );
             }
             case "PS384", "RSA_SSA_PSS_SHA384_MGF1" -> {
-                requireRsaKey(keyAlgorithm, alg);
+                requireRsaOrPssKey(keyAlgorithm, alg);
                 yield new ResolvedXadesAlgorithm(
                     SignatureAlgorithm.RSA_SSA_PSS_SHA384_MGF1,
                     EncryptionAlgorithm.RSASSA_PSS,
@@ -121,7 +121,7 @@ public final class XadesSignatureParametersFactory {
                 );
             }
             case "PS512", "RSA_SSA_PSS_SHA512_MGF1" -> {
-                requireRsaKey(keyAlgorithm, alg);
+                requireRsaOrPssKey(keyAlgorithm, alg);
                 yield new ResolvedXadesAlgorithm(
                     SignatureAlgorithm.RSA_SSA_PSS_SHA512_MGF1,
                     EncryptionAlgorithm.RSASSA_PSS,
@@ -164,15 +164,27 @@ public final class XadesSignatureParametersFactory {
         };
     }
 
-    private static void requireRsaKey(String keyAlgorithm, String alg) {
+    private static void requireClassicRsaKey(String keyAlgorithm, String alg) {
         if (!"RSA".equals(keyAlgorithm)) {
-            throw new IllegalArgumentException("Algorithm " + alg + " requires an RSA private key, but got: " + keyAlgorithm);
+            throw new IllegalArgumentException(
+                "Algorithm " + alg + " requires a classic RSA private key, but got: " + keyAlgorithm
+            );
+        }
+    }
+
+    private static void requireRsaOrPssKey(String keyAlgorithm, String alg) {
+        if (!"RSA".equals(keyAlgorithm) && !"RSASSA-PSS".equals(keyAlgorithm)) {
+            throw new IllegalArgumentException(
+                "Algorithm " + alg + " requires an RSA or RSASSA-PSS private key, but got: " + keyAlgorithm
+            );
         }
     }
 
     private static void requireEcKey(String keyAlgorithm, String alg) {
         if (!"EC".equals(keyAlgorithm) && !"ECDSA".equals(keyAlgorithm)) {
-            throw new IllegalArgumentException("Algorithm " + alg + " requires an EC private key, but got: " + keyAlgorithm);
+            throw new IllegalArgumentException(
+                "Algorithm " + alg + " requires an EC private key, but got: " + keyAlgorithm
+            );
         }
     }
 
