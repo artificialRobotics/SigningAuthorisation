@@ -39,7 +39,7 @@ import java.util.Map;
  * Supported features:
  *  - Detached signatures (RFC 7515 §7.2.1/§7.2.2),
  *  - Unencoded payload ("b64": false) per RFC 7797,
- *  - Algorithms: RS512, PS512, ES256/ES384/ES512 (RFC 7518),
+ *  - Algorithms: RS256, RS512, PS256, PS512, ES256/ES384/ES512 (RFC 7518),
  *  - Optional payload canonicalization via JCS (RFC 8785) signaled by "canonAlg",
  *  - Optional x5t#S256 header generation,
  *  - Optional final allow-list filtering for "crit" via --critClaimList,
@@ -55,7 +55,8 @@ import java.util.Map;
  *    This preserves the project’s external pre-hash model while emitting a
  *    JWS-compliant ECDSA signature encoding.
  *
- *  - PS512 remains standard "RSASSA-PSS" over signingInputBytes (internal hashing).
+ *  - RS256/RS512 use standard RSA PKCS#1 v1.5 signing over signingInputBytes.
+ *  - PS256/PS512 use standard RSASSA-PSS signing over signingInputBytes.
  */
 @CommandLine.Command(
         name = "sign",
@@ -66,7 +67,7 @@ public class SignCmd implements Runnable {
     @CommandLine.Option(
             names = "--alg",
             required = true,
-            description = "RS512 | PS512 | ES256 | ES384 | ES512")
+            description = "RS256 | RS512 | PS256 | PS512 | ES256 | ES384 | ES512")
     String alg;
 
     @CommandLine.Option(
@@ -143,7 +144,6 @@ public class SignCmd implements Runnable {
      * Example: --critClaimList b64,sigT,sigD
      *
      * If set, "crit" is filtered to these values (and only if the corresponding claim is present).
-     * 
      */
     @CommandLine.Option(
             names = "--critClaimList",
@@ -288,11 +288,11 @@ public class SignCmd implements Runnable {
             } else {
                 payloadB64 = Base64.getUrlEncoder().withoutPadding().encodeToString(payloadEffective);
                 signingInputBytes = (protectedB64 + "." + payloadB64).getBytes(StandardCharsets.US_ASCII);
-                payloadBytesForSigning = payloadB64.getBytes(StandardCharsets.US_ASCII); 
+                payloadBytesForSigning = payloadB64.getBytes(StandardCharsets.US_ASCII);
             }
 
             // (3b) Emit artifacts
-            writePayloadTextAndHashArtifacts(payloadEffective, payloadBytesForSigning,  signingInputBytes, outFile, alg);
+            writePayloadTextAndHashArtifacts(payloadEffective, payloadBytesForSigning, signingInputBytes, outFile, alg);
 
             // (4) Load private key
             PrivateKey priv;
@@ -427,7 +427,7 @@ public class SignCmd implements Runnable {
     }
 
     private static void writePayloadTextAndHashArtifacts(byte[] payloadEffective,
-    													 byte[] payloadBytesForSigning,
+                                                         byte[] payloadBytesForSigning,
                                                          byte[] signingInputBytes,
                                                          Path outFile,
                                                          String alg) throws Exception {
@@ -449,7 +449,7 @@ public class SignCmd implements Runnable {
         Files.writeString(json4SigPath, payloadText, StandardCharsets.UTF_8);
 
         String digestAlg = switch (alg) {
-            case "ES256" -> "SHA-256";
+            case "ES256", "RS256", "PS256" -> "SHA-256";
             case "ES384" -> "SHA-384";
             case "ES512", "RS512", "PS512" -> "SHA-512";
             default -> throw new IllegalArgumentException("Unsupported alg: " + alg);
@@ -458,10 +458,9 @@ public class SignCmd implements Runnable {
         byte[] digest = md.digest(signingInputBytes);
         String digestB64 = Base64.getEncoder().encodeToString(digest);
         Files.writeString(hash4SigPath, digestB64 + System.lineSeparator(), StandardCharsets.UTF_8);
-        
-        
+
         Files.writeString(b64Payload4SigPath, Base64.getEncoder().encodeToString(payloadEffective), StandardCharsets.UTF_8);
-        
+
         md = MessageDigest.getInstance(digestAlg);
         digest = md.digest(payloadBytesForSigning);
         digestB64 = Base64.getEncoder().encodeToString(digest);
@@ -470,7 +469,7 @@ public class SignCmd implements Runnable {
 
     private static byte[] computeSigningInputDigest(byte[] signingInputBytes, String alg) throws Exception {
         String digestAlg = switch (alg) {
-            case "ES256" -> "SHA-256";
+            case "ES256", "RS256", "PS256" -> "SHA-256";
             case "ES384" -> "SHA-384";
             case "ES512", "RS512", "PS512" -> "SHA-512";
             default -> throw new IllegalArgumentException("Unsupported alg: " + alg);
@@ -481,8 +480,8 @@ public class SignCmd implements Runnable {
     /**
      * Signs the signing input (standard) OR, for the ES* pre-hash protocol, signs a precomputed digest.
      *
-     * - RS512: standard JWS path (hashing inside algorithm)
-     * - PS512: standard JWS path (RSASSA-PSS over signingInputBytes; hashing inside)
+     * - RS256/RS512: standard JWS path (hashing inside algorithm)
+     * - PS256/PS512: standard JWS path (RSASSA-PSS over signingInputBytes; hashing inside)
      * - ES256/ES384/ES512: project protocol path
      *     derSignature = NONEwithECDSA over digest
      *     jwsSignature = DER -> raw R||S
@@ -492,8 +491,24 @@ public class SignCmd implements Runnable {
                                   PrivateKey key,
                                   String alg) throws Exception {
         switch (alg) {
+            case "RS256" -> {
+                Signature s = Signature.getInstance("SHA256withRSA");
+                s.initSign(key);
+                s.update(signingInputBytes);
+                return s.sign();
+            }
             case "RS512" -> {
                 Signature s = Signature.getInstance("SHA512withRSA");
+                s.initSign(key);
+                s.update(signingInputBytes);
+                return s.sign();
+            }
+            case "PS256" -> {
+                Signature s = Signature.getInstance("RSASSA-PSS");
+                PSSParameterSpec pss = new PSSParameterSpec(
+                        "SHA-256", "MGF1",
+                        new java.security.spec.MGF1ParameterSpec("SHA-256"), 32, 1);
+                s.setParameter(pss);
                 s.initSign(key);
                 s.update(signingInputBytes);
                 return s.sign();
